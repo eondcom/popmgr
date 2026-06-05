@@ -180,15 +180,24 @@ async fn scan_cosmic() -> CosmicStatus {
 }
 
 async fn apply_copy_path_patch() -> CmdResult {
-    let tmp = "/tmp/popmgr-cosmic-files";
+    let src  = "/tmp/popmgr-cosmic-files-src";
+    let patch = "/tmp/popmgr-cosmic-files-patch";
     let script = format!(
         r#"set -e
-rm -rf {tmp}
-git clone --depth 1 https://github.com/eondcom/cosmic-files-copy-path {tmp}
-cd {tmp}
-git submodule update --init
+rm -rf {src} {patch}
+echo "=== 패치 파일 클론 ==="
+git clone --depth 1 https://github.com/eondcom/cosmic-files-copy-path {patch} 2>&1
+echo "=== 원본 소스 클론 (pop-os/cosmic-files bf01bb3) ==="
+git clone https://github.com/pop-os/cosmic-files {src} 2>&1
+cd {src}
+git checkout bf01bb3 2>&1
+echo "=== 패치 적용 ==="
+git apply {patch}/cosmic-files-copy-path.patch 2>&1
+echo "=== 빌드 ==="
+export LIBCLANG_PATH=/usr/lib/llvm-18/lib
 cargo build --release 2>&1
-pkexec cp {tmp}/target/release/cosmic-files /usr/bin/cosmic-files
+echo "=== 설치 ==="
+pkexec bash -c 'cp -a /usr/bin/cosmic-files /usr/bin/cosmic-files.bak 2>/dev/null || true; install -Dm0755 {src}/target/release/cosmic-files /usr/bin/cosmic-files'
 echo "copy-path 패치 설치 완료"
 "#
     );
@@ -214,15 +223,23 @@ async fn remove_copy_path_patch() -> CmdResult {
 }
 
 async fn apply_three_finger_patch() -> CmdResult {
-    let tmp = "/tmp/popmgr-cosmic-comp";
+    let src   = "/tmp/popmgr-cosmic-comp-src";
+    let patch = "/tmp/popmgr-cosmic-comp-patch";
     let script = format!(
         r#"set -e
-rm -rf {tmp}
-git clone --depth 1 https://github.com/eondcom/cosmic-three-finger-gesture {tmp}
-cd {tmp}
-git submodule update --init
+rm -rf {src} {patch}
+echo "=== 패치 파일 클론 ==="
+git clone --depth 1 https://github.com/eondcom/cosmic-three-finger-gesture {patch} 2>&1
+echo "=== 원본 소스 클론 (pop-os/cosmic-comp 22fe419) ==="
+git clone https://github.com/pop-os/cosmic-comp {src} 2>&1
+cd {src}
+git checkout 22fe419 2>&1
+echo "=== 패치 적용 ==="
+git apply {patch}/three-finger-gesture.patch 2>&1
+echo "=== 빌드 ==="
 cargo build --release 2>&1
-pkexec cp {tmp}/target/release/cosmic-comp /usr/bin/cosmic-comp
+echo "=== 설치 ==="
+pkexec bash -c 'cp -a /usr/bin/cosmic-comp /usr/bin/cosmic-comp.bak 2>/dev/null || true; install -Dm0755 {src}/target/release/cosmic-comp /usr/bin/cosmic-comp'
 echo "3-finger 패치 설치 완료"
 "#
     );
