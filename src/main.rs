@@ -1,0 +1,272 @@
+mod runner;
+mod ui;
+
+use iced::{
+    widget::{button, column, container, row, scrollable, text, Space},
+    Color, Element, Length, Subscription, Task,
+};
+use runner::CmdResult;
+use ui::{
+    apps::{AppsMsg, AppsState},
+    cosmic_tweaks::{CosmicMsg, CosmicState},
+    ime::{ImeMsg, ImeState},
+    usb::{UsbMsg, UsbState},
+};
+
+#[derive(Debug, Clone, PartialEq)]
+enum Tab { Ime, Usb, Cosmic, Apps }
+
+#[derive(Debug, Clone)]
+enum Message {
+    TabSelect(Tab),
+    Ime(ImeMsg),
+    Usb(UsbMsg),
+    Cosmic(CosmicMsg),
+    Apps(AppsMsg),
+    CopyLog,
+    DrainStreamLog,
+}
+
+struct App {
+    tab: Tab,
+    ime: ImeState,
+    usb: UsbState,
+    cosmic: CosmicState,
+    apps: AppsState,
+    output: String,
+}
+
+fn main() -> iced::Result {
+    let icon = iced::window::icon::from_rgba(
+        include_bytes!("../assets/icon.rgba").to_vec(), 128, 128,
+    ).ok();
+
+    iced::application("popmgr", update, view)
+        .theme(|_| iced::Theme::Dark)
+        .font(include_bytes!("../assets/NanumSquareR.ttf"))
+        .default_font(iced::Font::with_name("NanumSquare"))
+        .subscription(subscription)
+        .window(iced::window::Settings {
+            size: iced::Size::new(780.0, 680.0),
+            icon,
+            platform_specific: iced::window::settings::PlatformSpecific {
+                application_id: "com.eondcom.Popmgr".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .run_with(init)
+}
+
+fn init() -> (App, Task<Message>) {
+    let app = App {
+        tab: Tab::Ime,
+        ime: ImeState::new(),
+        usb: UsbState::new(),
+        cosmic: CosmicState::new(),
+        apps: AppsState::new(),
+        output: String::new(),
+    };
+    let task = Task::batch([
+        Task::perform(async { () }, |_| Message::Ime(ImeMsg::Refresh)),
+        Task::perform(async { () }, |_| Message::Usb(UsbMsg::Refresh)),
+        Task::perform(async { () }, |_| Message::Cosmic(CosmicMsg::Refresh)),
+        Task::perform(async { () }, |_| Message::Apps(AppsMsg::Refresh)),
+    ]);
+    (app, task)
+}
+
+fn subscription(_app: &App) -> Subscription<Message> {
+    // 배포/빌드 중 실시간 출력 폴링
+    iced::time::every(std::time::Duration::from_millis(400))
+        .map(|_| Message::DrainStreamLog)
+}
+
+fn update(app: &mut App, msg: Message) -> Task<Message> {
+    match msg {
+        Message::TabSelect(t) => { app.tab = t; Task::none() }
+        Message::Ime(m) => {
+            let (task, res) = app.ime.update(m);
+            if let Some(r) = res { push_log(&mut app.output, r); }
+            task.map(Message::Ime)
+        }
+        Message::Usb(m) => {
+            let (task, res) = app.usb.update(m);
+            if let Some(r) = res { push_log(&mut app.output, r); }
+            task.map(Message::Usb)
+        }
+        Message::Cosmic(m) => {
+            let (task, res) = app.cosmic.update(m);
+            if let Some(r) = res { push_log(&mut app.output, r); }
+            task.map(Message::Cosmic)
+        }
+        Message::Apps(m) => {
+            let (task, res) = app.apps.update(m);
+            if let Some(r) = res { push_log(&mut app.output, r); }
+            task.map(Message::Apps)
+        }
+        Message::CopyLog => iced::clipboard::write(app.output.clone()),
+        Message::DrainStreamLog => {
+            let lines = runner::stream_drain();
+            if !lines.is_empty() {
+                for line in &lines {
+                    app.output.push_str(line);
+                    app.output.push('\n');
+                }
+                trim_log(&mut app.output, 400);
+            }
+            Task::none()
+        }
+    }
+}
+
+fn push_log(out: &mut String, r: CmdResult) {
+    let prefix = if r.success { "[OK]" } else { "[ERR]" };
+    out.push_str(&format!("{prefix} {}\n", r.output.trim()));
+    trim_log(out, 300);
+}
+
+fn trim_log(out: &mut String, max: usize) {
+    let lines: Vec<&str> = out.lines().collect();
+    if lines.len() > max {
+        *out = lines[lines.len() - max..].join("\n") + "\n";
+    }
+}
+
+fn view(app: &App) -> Element<'_, Message> {
+    let sidebar = sidebar_view(app);
+
+    let content: Element<'_, Message> = match &app.tab {
+        Tab::Ime    => app.ime.view().map(Message::Ime),
+        Tab::Usb    => app.usb.view().map(Message::Usb),
+        Tab::Cosmic => app.cosmic.view().map(Message::Cosmic),
+        Tab::Apps   => app.apps.view().map(Message::Apps),
+    };
+
+    let log_panel = log_panel_view(&app.output);
+
+    let right = column![
+        scrollable(
+            container(content).width(Length::Fill).padding([20, 24])
+        ).height(Length::Fill),
+        log_panel,
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill);
+
+    row![sidebar, right].height(Length::Fill).into()
+}
+
+fn sidebar_view(app: &App) -> Element<'_, Message> {
+    let tabs: &[(Tab, &str, &str)] = &[
+        (Tab::Ime,    "IME",        "한글 입력기"),
+        (Tab::Usb,    "USB",        "USB / 트랙볼"),
+        (Tab::Cosmic, "COSMIC",     "COSMIC 트윅"),
+        (Tab::Apps,   "앱 관리",    "설치 / 제거"),
+    ];
+
+    let logo = container(
+        text("popmgr")
+            .size(18)
+            .color(Color::from_rgb(0.35, 0.65, 1.0))
+    )
+    .padding(iced::Padding { top: 18.0, right: 16.0, bottom: 6.0, left: 16.0 });
+
+    let sub = container(
+        text("Pop!_OS 관리 도구")
+            .size(10)
+            .color(Color::from_rgb(0.4, 0.4, 0.5))
+    )
+    .padding(iced::Padding { top: 0.0, right: 16.0, bottom: 16.0, left: 16.0 });
+
+    let mut col = column![logo, sub];
+
+    for (tab, label, hint) in tabs {
+        let active = &app.tab == tab;
+        let bg = if active { Color::from_rgb(0.1, 0.25, 0.5) } else { Color::from_rgba(0.0, 0.0, 0.0, 0.0) };
+        let tc = if active { Color::WHITE } else { Color::from_rgb(0.65, 0.65, 0.72) };
+
+        let btn = button(
+            column![
+                text(*label).size(13).color(tc),
+                text(*hint).size(10).color(if active { Color::from_rgb(0.7, 0.85, 1.0) } else { Color::from_rgb(0.4, 0.4, 0.45) }),
+            ]
+            .spacing(1)
+        )
+        .width(Length::Fill)
+        .padding([8, 14])
+        .on_press(Message::TabSelect(tab.clone()))
+        .style(move |_, _| iced::widget::button::Style {
+            background: Some(iced::Background::Color(bg)),
+            border: iced::Border { radius: 6.0.into(), ..Default::default() },
+            text_color: tc,
+            ..Default::default()
+        });
+
+        col = col.push(
+            container(btn).padding(iced::Padding { top: 0.0, right: 8.0, bottom: 2.0, left: 8.0 })
+        );
+    }
+
+    container(col)
+        .width(150)
+        .height(Length::Fill)
+        .style(|_| iced::widget::container::Style {
+            background: Some(iced::Background::Color(Color::from_rgb(0.07, 0.07, 0.09))),
+            border: iced::Border {
+                color: Color::from_rgb(0.15, 0.15, 0.2),
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn log_panel_view(output: &str) -> Element<'_, Message> {
+    let log_txt = if output.is_empty() {
+        "작업 결과가 여기에 표시됩니다."
+    } else {
+        output
+    };
+    let log_col = if output.is_empty() {
+        Color::from_rgb(0.35, 0.35, 0.4)
+    } else {
+        Color::from_rgb(0.5, 0.8, 0.5)
+    };
+
+    let copy_btn = button(text("복사").size(11).color(Color::from_rgb(0.5, 0.7, 0.5)))
+        .on_press(Message::CopyLog)
+        .padding([3, 8])
+        .style(|_, _| iced::widget::button::Style {
+            background: Some(iced::Background::Color(Color::from_rgb(0.06, 0.12, 0.06))),
+            border: iced::Border { radius: 4.0.into(), color: Color::from_rgb(0.18, 0.3, 0.18), width: 1.0 },
+            text_color: Color::from_rgb(0.5, 0.7, 0.5),
+            ..Default::default()
+        });
+
+    let header = row![
+        text("로그").size(11).color(Color::from_rgb(0.35, 0.5, 0.35)),
+        Space::with_width(Length::Fill),
+        copy_btn,
+    ]
+    .align_y(iced::Alignment::Center);
+
+    container(
+        column![
+            container(header).padding(iced::Padding { top: 4.0, right: 10.0, bottom: 2.0, left: 10.0 }),
+            scrollable(
+                container(text(log_txt).size(12).color(log_col))
+                    .padding(iced::Padding { top: 0.0, right: 10.0, bottom: 6.0, left: 10.0 })
+                    .width(Length::Fill)
+            ).height(120),
+        ]
+    )
+    .width(Length::Fill)
+    .style(|_| iced::widget::container::Style {
+        background: Some(iced::Background::Color(Color::from_rgb(0.04, 0.07, 0.04))),
+        border: iced::Border { color: Color::from_rgb(0.12, 0.2, 0.12), width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    })
+    .into()
+}
