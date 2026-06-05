@@ -33,12 +33,22 @@ mkdir -p "$BIN_DIR"
 cp target/release/popmgr "$BIN_DIR/popmgr"
 echo "  -> $BIN_DIR/popmgr"
 
-# 3. .desktop 등록
+# 3. 아이콘 + .desktop 등록
 echo ""
-echo "[3/5] 앱 런처 등록..."
+echo "[3/5] 아이콘 및 앱 런처 등록..."
 mkdir -p "$APP_DIR"
 cp "$REPO_DIR/popmgr.desktop" "$APP_DIR/popmgr.desktop"
 echo "  -> $APP_DIR/popmgr.desktop"
+
+for SIZE in 16 32 48 64 128 256; do
+    ICON_DIR="$HOME/.local/share/icons/hicolor/${SIZE}x${SIZE}/apps"
+    mkdir -p "$ICON_DIR"
+    convert "$REPO_DIR/assets/popmgr-icon.png" -resize ${SIZE}x${SIZE} "$ICON_DIR/popmgr.png" 2>/dev/null || \
+        cp "$REPO_DIR/assets/popmgr-icon.png" "$ICON_DIR/popmgr.png"
+done
+gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor/" 2>/dev/null || true
+update-desktop-database "$APP_DIR" 2>/dev/null || true
+echo "  -> 아이콘 설치 완료 (hicolor 16~256px)"
 
 # 4. cosmic-files copy-path 패치
 echo ""
