@@ -135,7 +135,7 @@ fn patch_card(
     remove_msg: CosmicMsg,
     disabled: bool,
 ) -> Element<'static, CosmicMsg> {
-    let status_txt = if patched { "✓ 적용됨" } else { "✗ 미적용" };
+    let status_txt = if patched { "[적용됨]" } else { "[미적용]" };
     let status_col = if patched { C_OK } else { C_DIM };
 
     let btn: Element<'static, CosmicMsg> = if patched {

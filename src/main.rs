@@ -43,6 +43,7 @@ fn main() -> iced::Result {
 
     iced::application("popmgr", update, view)
         .theme(|_| iced::Theme::Dark)
+        .font(include_bytes!("../assets/NanumGothic.ttf"))
         .font(include_bytes!("../assets/NanumSquareR.ttf"))
         .default_font(iced::Font::with_name("NanumSquare"))
         .subscription(subscription)

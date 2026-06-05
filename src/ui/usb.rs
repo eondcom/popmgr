@@ -213,7 +213,7 @@ fn device_row(d: &UsbDevice, disabled: bool) -> Element<'_, UsbMsg> {
 fn failed_port_row(fp: &UsbFailedPort) -> Element<'_, UsbMsg> {
     container(
         row![
-            text("⚠").size(16),
+            text("[!]").size(13).color(C_ERR),
             Space::with_width(10),
             column![
                 text(format!("포트 {} — 열거 실패", fp.port)).size(13).color(C_ERR),
@@ -273,7 +273,7 @@ async fn scan_usb() -> UsbStatus {
         let dev          = read("devnum");
 
         let highlight = vid == "047d" || vid == "0853";  // Kensington / Realforce
-        let icon: &'static str = if vid == "047d" { "🖱" } else if vid == "0853" { "⌨" } else { "🔌" };
+        let icon: &'static str = if vid == "047d" { "[M]" } else if vid == "0853" { "[K]" } else { "[U]" };
 
         devices.push(UsbDevice { vid, pid, manufacturer, product, speed, bus, dev, icon, highlight });
     }

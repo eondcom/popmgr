@@ -172,13 +172,13 @@ impl ImeState {
 
         if let Some(st) = &self.status {
             col = col.push(Space::with_height(12));
-            let env_txt = if st.env_match { "✓ /etc/environment 일치" } else { "✗ /etc/environment 불일치" };
+            let env_txt = if st.env_match { "[OK] /etc/environment 일치" } else { "[!] /etc/environment 불일치" };
             let env_col = if st.env_match { C_OK } else { C_ERR };
             col = col.push(text(env_txt).size(12).color(env_col));
             col = col.push(Space::with_height(4));
             let daemon_txt = match &st.daemon_running {
-                Some(k) => format!("✓ {} 데몬 실행 중", k.label()),
-                None    => "✗ 데몬 미실행".into(),
+                Some(k) => format!("[실행] {} 데몬 실행 중", k.label()),
+                None    => "[중지] 데몬 미실행".into(),
             };
             let daemon_col = if st.daemon_running.is_some() { C_OK } else { C_WARN };
             col = col.push(text(daemon_txt).size(12).color(daemon_col));
@@ -324,36 +324,53 @@ async fn apply_ime(kind: ImeKind) -> CmdResult {
         runner::run("pkill", &["-x", d]).await;
     }
 
-    // /etc/environment 업데이트 (pkexec python3 인라인 스크립트)
+    // /etc/environment 업데이트 (pkexec tee 방식 — python3 불필요)
     let env_lines = kind.env_lines();
     let keys: Vec<&str> = env_lines.iter().map(|(k, _)| *k).collect();
     let assignments: Vec<String> = env_lines.iter().map(|(k, v)| format!("{k}={v}")).collect();
 
-    let py = format!(
-        r#"
-import re, sys
-keys = {keys_repr}
-lines = open('/etc/environment').read().splitlines()
-result = [l for l in lines if not any(l.startswith(k+'=') for k in keys)]
-result += {assignments_repr}
-open('/etc/environment', 'w').write('\n'.join(result) + '\n')
-print('적용 완료')
-"#,
-        keys_repr = format!("{:?}", keys),
-        assignments_repr = format!("{:?}", assignments),
+    // 기존 키 제거 후 새 값 추가하는 awk 스크립트
+    let key_pattern = keys.iter().map(|k| format!("^{}=", k)).collect::<Vec<_>>().join("|");
+    let new_lines = assignments.join("\n");
+    let script = format!(
+        "pkexec bash -c \"awk '!/^({pattern})/' /etc/environment > /tmp/env.tmp && echo {new_lines_q} >> /tmp/env.tmp && cp /tmp/env.tmp /etc/environment\"",
+        pattern = key_pattern,
+        new_lines_q = shell_quote(&new_lines),
     );
-
-    let script = format!("pkexec python3 -c {}", shell_quote(&py));
     let r = runner::run_sh(&script).await;
     if !r.success {
         return r;
     }
 
-    // systemd user service 관리
+    // 현재 Wayland 세션에 즉시 반영 (새로 시작하는 앱에 적용)
+    let dbus_keys = keys.join(" ");
+    let export_pairs: Vec<String> = env_lines.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    let session_script = format!(
+        "dbus-update-activation-environment --systemd {dbus_keys} 2>/dev/null; \
+         systemctl --user import-environment {dbus_keys} 2>/dev/null; \
+         export {exports}",
+        dbus_keys = dbus_keys,
+        exports = export_pairs.join(" "),
+    );
+    runner::run_sh(&session_script).await;
+
+    // 선택한 IME 데몬 재시작
+    let daemon_cmd = match &kind {
+        ImeKind::Kime   => Some("pkill -x kime 2>/dev/null; sleep 0.3; kime &"),
+        ImeKind::Ibus   => Some("pkill -x ibus-daemon 2>/dev/null; sleep 0.3; ibus-daemon -drxR &"),
+        ImeKind::Fcitx5 => Some("pkill -x fcitx5 2>/dev/null; sleep 0.3; fcitx5 -d --replace &"),
+    };
+    if let Some(cmd) = daemon_cmd {
+        runner::run_sh(cmd).await;
+    }
+
+    // systemd user service autostart 설정
     let (enable, disable): (&[&str], &[&str]) = match &kind {
-        ImeKind::Ibus   => (&["ibus-daemon.service"], &["fcitx5.service"]),
-        ImeKind::Fcitx5 => (&["fcitx5.service"], &["ibus-daemon.service"]),
-        ImeKind::Kime   => (&[], &["ibus-daemon.service", "fcitx5.service"]),
+        ImeKind::Ibus   => (&["ibus.service"], &["fcitx5.service"]),
+        ImeKind::Fcitx5 => (&["fcitx5.service"], &["ibus.service"]),
+        ImeKind::Kime   => (&[], &["ibus.service", "fcitx5.service"]),
     };
     for svc in disable {
         runner::run("systemctl", &["--user", "disable", "--now", svc]).await;
@@ -362,7 +379,13 @@ print('적용 완료')
         runner::run("systemctl", &["--user", "enable", "--now", svc]).await;
     }
 
-    CmdResult { success: true, output: format!("{} 환경변수 적용 완료. 재로그인 후 적용됩니다.", kind.label()) }
+    CmdResult {
+        success: true,
+        output: format!(
+            "{} 적용 완료.\n- /etc/environment 업데이트\n- 현재 세션 환경변수 반영\n- 데몬 재시작\n새로 여는 앱에 즉시 적용됩니다.",
+            kind.label()
+        ),
+    }
 }
 
 fn shell_quote(s: &str) -> String {
