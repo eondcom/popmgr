@@ -67,6 +67,7 @@ pub struct ImeStatus {
 pub enum ImeMsg {
     Refresh,
     Refreshed(ImeStatus),
+    AutoReconnect(ImeKind),
     Select(ImeKind),
     Install(ImeKind),
     Apply,
@@ -98,8 +99,35 @@ impl ImeState {
                 if let Some(ref active) = s.active {
                     self.selected = active.clone();
                 }
+                // 시작 시 실행 중인 IME 데몬을 조용히 재연결 (Wayland 연결 복구)
+                let reconnect_task = if let Some(ref kind) = s.daemon_running {
+                    let k = kind.clone();
+                    Task::perform(
+                        async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                            k
+                        },
+                        ImeMsg::AutoReconnect,
+                    )
+                } else {
+                    Task::none()
+                };
                 self.status = Some(s);
-                (Task::none(), None)
+                (reconnect_task, None)
+            }
+            ImeMsg::AutoReconnect(kind) => {
+                let cmd = match &kind {
+                    ImeKind::Kime   => "pkill -x kime 2>/dev/null; sleep 0.2; kime &",
+                    ImeKind::Ibus   => "pkill -x ibus-daemon 2>/dev/null; sleep 0.2; ibus-daemon -drxR &",
+                    ImeKind::Fcitx5 => "pkill -x fcitx5 2>/dev/null; sleep 0.2; fcitx5 -d --replace &",
+                };
+                let dbus_keys = kind.env_lines().iter().map(|(k,_)| *k).collect::<Vec<_>>().join(" ");
+                let full = format!("{cmd}; dbus-update-activation-environment --systemd {dbus_keys} 2>/dev/null");
+                let t = Task::perform(
+                    async move { runner::run_sh(&full).await },
+                    |_| ImeMsg::Refresh,
+                );
+                (t, None)
             }
             ImeMsg::Select(k) => {
                 self.selected = k;
