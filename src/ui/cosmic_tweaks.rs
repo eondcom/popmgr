@@ -180,21 +180,21 @@ async fn scan_cosmic() -> CosmicStatus {
 }
 
 async fn apply_copy_path_patch() -> CmdResult {
-    let src   = "/tmp/popmgr-cosmic-files-src";
+    let src = "/tmp/popmgr-cosmic-files-src";
     let script = format!(
         r#"set -e
 rm -rf {src}
-mkdir -p {src}
 
-echo "=== 의존성 확인 ==="
-which patch || sudo apt-get install -y patch
-which curl  || sudo apt-get install -y curl
+echo "=== 설치된 버전 커밋 확인 ==="
+CF_COMMIT=$(dpkg -l cosmic-files 2>/dev/null | grep '^ii' | awk '{{print $3}}' | rev | cut -d'~' -f1 | rev)
+echo "cosmic-files 커밋: $CF_COMMIT"
 
-echo "=== 소스 타르볼 다운로드 (커밋 bf01bb3) ==="
-curl -fL https://github.com/pop-os/cosmic-files/archive/bf01bb3.tar.gz \
+echo "=== 소스 타르볼 다운로드 ==="
+curl -fL "https://github.com/pop-os/cosmic-files/archive/${{CF_COMMIT}}.tar.gz" \
     -o /tmp/cosmic-files-src.tar.gz
 tar xzf /tmp/cosmic-files-src.tar.gz -C /tmp/
-mv /tmp/cosmic-files-bf01bb3 {src} 2>/dev/null || mv /tmp/cosmic-files-bf01bb3* {src} 2>/dev/null || true
+SRCDIR=$(ls -d /tmp/cosmic-files-${{CF_COMMIT}}* 2>/dev/null | head -1)
+mv "$SRCDIR" {src}
 
 echo "=== 패치 파일 다운로드 ==="
 curl -fL https://raw.githubusercontent.com/eondcom/cosmic-files-copy-path/main/cosmic-files-copy-path.patch \
@@ -202,7 +202,7 @@ curl -fL https://raw.githubusercontent.com/eondcom/cosmic-files-copy-path/main/c
 
 echo "=== 패치 적용 ==="
 cd {src}
-patch -p1 < /tmp/cosmic-files-copy-path.patch
+patch -p1 --fuzz 5 < /tmp/cosmic-files-copy-path.patch
 
 echo "=== 빌드 ==="
 LIBCLANG_PATH=$(ls -d /usr/lib/llvm-*/lib 2>/dev/null | sort -V | tail -1)
@@ -242,17 +242,17 @@ async fn apply_three_finger_patch() -> CmdResult {
     let script = format!(
         r#"set -e
 rm -rf {src}
-mkdir -p {src}
 
-echo "=== 의존성 확인 ==="
-which patch || sudo apt-get install -y patch
-which curl  || sudo apt-get install -y curl
+echo "=== 설치된 버전 커밋 확인 ==="
+CC_COMMIT=$(dpkg -l cosmic-comp 2>/dev/null | grep '^ii' | awk '{{print $3}}' | rev | cut -d'~' -f1 | rev)
+echo "cosmic-comp 커밋: $CC_COMMIT"
 
-echo "=== 소스 타르볼 다운로드 (커밋 22fe419) ==="
-curl -fL https://github.com/pop-os/cosmic-comp/archive/22fe419.tar.gz \
+echo "=== 소스 타르볼 다운로드 ==="
+curl -fL "https://github.com/pop-os/cosmic-comp/archive/${{CC_COMMIT}}.tar.gz" \
     -o /tmp/cosmic-comp-src.tar.gz
 tar xzf /tmp/cosmic-comp-src.tar.gz -C /tmp/
-mv /tmp/cosmic-comp-22fe419 {src} 2>/dev/null || mv /tmp/cosmic-comp-22fe419* {src} 2>/dev/null || true
+SRCDIR=$(ls -d /tmp/cosmic-comp-${{CC_COMMIT}}* 2>/dev/null | head -1)
+mv "$SRCDIR" {src}
 
 echo "=== 패치 파일 다운로드 ==="
 curl -fL https://raw.githubusercontent.com/eondcom/cosmic-three-finger-gesture/main/three-finger-gesture.patch \
@@ -260,14 +260,14 @@ curl -fL https://raw.githubusercontent.com/eondcom/cosmic-three-finger-gesture/m
 
 echo "=== 패치 적용 ==="
 cd {src}
-patch -p1 < /tmp/three-finger-gesture.patch
+patch -p1 --fuzz 5 < /tmp/three-finger-gesture.patch
 
-echo "=== 빌드 (시간 소요) ==="
+echo "=== 빌드 (10~20분 소요) ==="
 cargo build --release 2>&1
 
 echo "=== 설치 ==="
 pkexec bash -c 'cp -a /usr/bin/cosmic-comp /usr/bin/cosmic-comp.bak 2>/dev/null || true; install -Dm0755 {src}/target/release/cosmic-comp /usr/bin/cosmic-comp'
-echo "3-finger 패치 설치 완료"
+echo "3-finger 패치 설치 완료 — 로그아웃 후 재로그인 필요"
 "#
     );
     let r = runner::run_stream(&script).await;
