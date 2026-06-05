@@ -23,6 +23,9 @@ Pop!_OS / COSMIC 데스크톱 관리 도구 — Rust + [Iced](https://github.com
 - `dbus-update-activation-environment` + 데몬 재시작으로 **재로그인 없이 즉시 적용**
 - popmgr 시작 시 실행 중인 IME 데몬 자동 재연결 (Wayland 연결 끊김 방지)
 - COSMIC 환경 권장 IME: **kime**
+- **셸 init 충돌 진단**: `~/.profile`, `~/.bashrc`, `~/.zshrc`, `~/.zprofile`, `~/.bash_profile` 에서 활성 IME와 모순되는 `GTK_IM_MODULE`/`QT_IM_MODULE`/`XMODIFIERS` 등 export 라인을 감지. "정리" 버튼으로 자동 백업 후 주석 처리.
+- **snap 누출 감지**: 현재 환경의 `GTK_IM_MODULE_FILE` 이 snap 캐시(`~/snap/.../immodules.cache`)를 가리키면 경고. snap 앱이 띄운 셸에서 IDE 를 실행하면 시스템 GTK IM 모듈을 못 찾아 한글 입력이 깨지는 사고를 미리 차단.
+- **JetBrains IDE vmoptions 자동 패치**: `~/.config/JetBrains/<IDE>/*.vmoptions` 파일들을 스캔해 XIM 안정화 옵션(`-Dawt.toolkit.name=XToolkit`, `-Drecreate.x11.input.method=true`) 누락 여부를 표시. "패치" 버튼으로 백업 후 자동 추가 — IntelliJ Ultimate 의 `XInputMethod.setXICFocusNative` 133초 freeze 같은 사고를 예방.
 
 ### USB 탭
 - USB 장치 전체 목록 (Kensington 트랙볼·Realforce 키보드 강조)
@@ -103,6 +106,17 @@ sudo cp /usr/bin/cosmic-comp.bak /usr/bin/cosmic-comp
 
 - 한글 IME 설정 가이드: [cosmic-os-korean](https://github.com/Hostingglobal-Tech/cosmic-os-korean)
 - 폰트: NanumSquare (UI) + NanumGothic (한글 폴백)
+
+## 변경 이력
+
+### 2026-06-06 — IME 진단 확장
+- `~/.profile` 등 사용자 셸 init 파일의 IME export 충돌 감지/정리 추가.
+  - 이유: `/etc/environment` 만 동기화하면 사용자가 `.profile` 에 손수 박은 옛 IME 변수(예: kime → ibus 전환 시 흔적)가 시스템 설정을 덮어쓰며 IntelliJ AWT 가 존재하지 않는 ibus XIM 서버에 133초 freeze 하는 사고가 발생.
+- 현재 환경의 `GTK_IM_MODULE_FILE` snap 누출 감지.
+  - 이유: snap 으로 띄운 터미널 안에서 다른 앱을 실행하면 snap 컨테이너의 immodules.cache 가 부모로 누출돼 시스템 GTK IM 모듈을 못 찾는 사례 발견 (waveterm snap).
+- JetBrains IDE vmoptions 자동 패치 (`~/.config/JetBrains/<IDE>/*.vmoptions`).
+  - 추가 옵션: `-Dawt.toolkit.name=XToolkit`, `-Drecreate.x11.input.method=true`.
+  - 이유: native Wayland IM 경로의 freeze 회피 + IME 데몬 재시작 후 입력 컨텍스트 재구성.
 
 ## 라이선스
 
