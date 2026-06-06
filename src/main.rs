@@ -37,6 +37,11 @@ struct App {
 }
 
 fn main() -> iced::Result {
+    if let Err(msg) = acquire_single_instance_lock() {
+        eprintln!("{msg}");
+        std::process::exit(0);
+    }
+
     let icon = iced::window::icon::from_rgba(
         include_bytes!("../assets/icon.rgba").to_vec(), 128, 128,
     ).ok();
@@ -57,6 +62,52 @@ fn main() -> iced::Result {
             ..Default::default()
         })
         .run_with(init)
+}
+
+fn acquire_single_instance_lock() -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let dir = std::env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| format!("/tmp/popmgr-{}", users_uid()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = format!("{dir}/popmgr.lock");
+
+    let file = std::fs::OpenOptions::new()
+        .read(true).write(true).create(true).mode(0o600)
+        .open(&path)
+        .map_err(|e| format!("lock 파일 열기 실패: {e}"))?;
+
+    // LOCK_EX | LOCK_NB
+    let rc = unsafe { libc_flock(file.as_raw_fd(), 2 | 4) };
+    if rc != 0 {
+        let other_pid = std::fs::read_to_string(&path).unwrap_or_default();
+        return Err(format!(
+            "popmgr가 이미 실행 중입니다 (pid: {}). 종료합니다.",
+            other_pid.trim()
+        ));
+    }
+
+    // 잠금 유지를 위해 파일 핸들을 leak — 프로세스 종료 시 OS가 정리
+    use std::io::{Seek, SeekFrom, Write};
+    let mut f = file;
+    let _ = f.set_len(0);
+    let _ = f.seek(SeekFrom::Start(0));
+    let _ = writeln!(f, "{}", std::process::id());
+    let _ = f.flush();
+    std::mem::forget(f);
+    Ok(())
+}
+
+fn users_uid() -> u32 {
+    unsafe { libc_getuid() }
+}
+
+unsafe extern "C" {
+    #[link_name = "flock"]
+    fn libc_flock(fd: i32, op: i32) -> i32;
+    #[link_name = "getuid"]
+    fn libc_getuid() -> u32;
 }
 
 fn init() -> (App, Task<Message>) {

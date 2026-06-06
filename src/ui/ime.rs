@@ -638,6 +638,22 @@ async fn check_env_match(kind: &ImeKind) -> bool {
 }
 
 async fn apply_ime(kind: ImeKind) -> CmdResult {
+    // 선택한 IME 바이너리가 실제로 설치되어 있는지 먼저 확인
+    let daemon_bin = match &kind {
+        ImeKind::Kime   => "kime",
+        ImeKind::Ibus   => "ibus-daemon",
+        ImeKind::Fcitx5 => "fcitx5",
+    };
+    if !which_exists(daemon_bin).await {
+        return CmdResult {
+            success: false,
+            output: format!(
+                "{} 미설치: '{}' 바이너리를 찾을 수 없습니다.\n먼저 설치 버튼을 눌러주세요.",
+                kind.label(), daemon_bin
+            ),
+        };
+    }
+
     // 경쟁 데몬 종료
     let others: &[&str] = match &kind {
         ImeKind::Ibus   => &["fcitx5", "kime"],
@@ -666,29 +682,33 @@ async fn apply_ime(kind: ImeKind) -> CmdResult {
         return r;
     }
 
-    // 현재 Wayland 세션에 즉시 반영 (새로 시작하는 앱에 적용)
+    // dbus / systemd-user 환경변수 import (D-Bus 활성화로 띄우는 앱에만 효과)
+    // 주의: 컴포지터(COSMIC)가 launcher로 띄우는 앱은 컴포지터 시작 시점의 env를 상속하므로
+    //       완전한 적용을 위해서는 로그아웃/로그인이 필요함.
     let dbus_keys = keys.join(" ");
-    let export_pairs: Vec<String> = env_lines.iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
     let session_script = format!(
-        "dbus-update-activation-environment --systemd {dbus_keys} 2>/dev/null; \
-         systemctl --user import-environment {dbus_keys} 2>/dev/null; \
-         export {exports}",
+        "dbus-update-activation-environment --systemd --all 2>/dev/null; \
+         systemctl --user import-environment {dbus_keys} 2>/dev/null",
         dbus_keys = dbus_keys,
-        exports = export_pairs.join(" "),
     );
     runner::run_sh(&session_script).await;
 
-    // 선택한 IME 데몬 재시작
+    // 선택한 IME 데몬 재시작 (detach 후 실제 실행 확인)
     let daemon_cmd = match &kind {
-        ImeKind::Kime   => Some("pkill -x kime 2>/dev/null; sleep 0.3; kime &"),
-        ImeKind::Ibus   => Some("pkill -x ibus-daemon 2>/dev/null; sleep 0.3; ibus-daemon -drxR &"),
-        ImeKind::Fcitx5 => Some("pkill -x fcitx5 2>/dev/null; sleep 0.3; fcitx5 -d --replace &"),
+        ImeKind::Kime   => "pkill -x kime 2>/dev/null; sleep 0.3; setsid kime </dev/null >/dev/null 2>&1 &",
+        ImeKind::Ibus   => "pkill -x ibus-daemon 2>/dev/null; sleep 0.3; setsid ibus-daemon -drxR </dev/null >/dev/null 2>&1 &",
+        ImeKind::Fcitx5 => "pkill -x fcitx5 2>/dev/null; sleep 0.3; setsid fcitx5 -d --replace </dev/null >/dev/null 2>&1 &",
     };
-    if let Some(cmd) = daemon_cmd {
-        runner::run_sh(cmd).await;
-    }
+    runner::run_sh(daemon_cmd).await;
+
+    // 데몬이 실제로 살아있는지 검증
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let pgrep_target = match &kind {
+        ImeKind::Kime   => "kime",
+        ImeKind::Ibus   => "ibus-daemon",
+        ImeKind::Fcitx5 => "fcitx5",
+    };
+    let daemon_alive = runner::run("pgrep", &["-x", pgrep_target]).await.success;
 
     // systemd user service autostart 설정
     let (enable, disable): (&[&str], &[&str]) = match &kind {
@@ -703,10 +723,20 @@ async fn apply_ime(kind: ImeKind) -> CmdResult {
         runner::run("systemctl", &["--user", "enable", "--now", svc]).await;
     }
 
+    if !daemon_alive {
+        return CmdResult {
+            success: false,
+            output: format!(
+                "/etc/environment는 업데이트했지만 {} 데몬이 시작되지 않았습니다.\n터미널에서 직접 `{}` 실행 후 에러 메시지를 확인해주세요.",
+                kind.label(), pgrep_target
+            ),
+        };
+    }
+
     CmdResult {
         success: true,
         output: format!(
-            "{} 적용 완료.\n- /etc/environment 업데이트\n- 현재 세션 환경변수 반영\n- 데몬 재시작\n새로 여는 앱에 즉시 적용됩니다.",
+            "{} 적용 완료.\n- /etc/environment 업데이트\n- 데몬 시작 확인됨\n\n[중요] /etc/environment는 로그인 시점에 한 번만 읽힙니다.\n현재 실행 중인 COSMIC 세션의 앱들에 완전히 적용하려면 로그아웃 후 다시 로그인하세요.\n(D-Bus 활성화로 띄우는 앱에는 부분적으로 즉시 반영됨)",
             kind.label()
         ),
     }

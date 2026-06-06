@@ -14,6 +14,7 @@ pub struct UsbDevice {
     pub speed: String,
     pub bus: String,
     pub dev: String,
+    pub sysfs_name: String,  // 토폴로지 식별자 (예: "1-5.1", "4-1.1")
     pub icon: &'static str,
     pub highlight: bool,
 }
@@ -34,7 +35,7 @@ pub struct UsbStatus {
 pub enum UsbMsg {
     Refresh,
     Refreshed(UsbStatus),
-    RetrieveDev(String, String),   // bus, dev
+    RetrieveDev(String),           // sysfs_name (예: "1-5.1")
     RetrieveAll,
     XhciReset,
     RestartKtrackball,
@@ -61,17 +62,33 @@ impl UsbState {
                 (t, None)
             }
             UsbMsg::Refreshed(s) => { self.status = Some(s); (Task::none(), None) }
-            UsbMsg::RetrieveDev(bus, dev) => {
-                self.running = Some("장치 재인식 중...".into());
-                let path = format!("/sys/bus/usb/devices/usb{bus}/{bus}-{dev}");
-                let script = format!("pkexec bash -c 'echo 0 > {path}/authorized && echo 1 > {path}/authorized'");
+            UsbMsg::RetrieveDev(sysfs_name) => {
+                self.running = Some(format!("{} 재인식 중...", sysfs_name));
+                let path = format!("/sys/bus/usb/devices/{sysfs_name}");
+                // authorized 토글로 실제 disconnect/reconnect 발생
+                let script = format!(
+                    "pkexec bash -c 'set -e; \
+                     test -f {path}/authorized || {{ echo \"경로 없음: {path}\" >&2; exit 1; }}; \
+                     echo 0 > {path}/authorized; sleep 0.3; echo 1 > {path}/authorized'"
+                );
                 let t = Task::perform(async move { runner::run_sh(&script).await }, UsbMsg::Done);
                 (t, None)
             }
             UsbMsg::RetrieveAll => {
-                self.running = Some("USB 전체 재인식 중...".into());
+                self.running = Some("USB 전체 재인식 중 (authorized 토글)...".into());
+                // udevadm trigger는 udev 규칙만 재실행, 장치 reset이 일어나지 않음.
+                // 각 장치의 authorized를 0/1 토글해서 실제 disconnect/reconnect 유도.
+                let script = "pkexec bash -c '\
+                    set -e; \
+                    paths=$(ls -d /sys/bus/usb/devices/*/authorized 2>/dev/null | grep -v /usb[1-9]/authorized); \
+                    for p in $paths; do echo 0 > \"$p\" 2>/dev/null || true; done; \
+                    sleep 0.5; \
+                    for p in $paths; do echo 1 > \"$p\" 2>/dev/null || true; done; \
+                    udevadm trigger --subsystem-match=usb; \
+                    udevadm settle\
+                '";
                 let t = Task::perform(
-                    async { runner::run_sh("pkexec udevadm trigger --subsystem-match=usb").await },
+                    async move { runner::run_sh(script).await },
                     UsbMsg::Done,
                 );
                 (t, None)
@@ -185,8 +202,7 @@ fn device_row(d: &UsbDevice, disabled: bool) -> Element<'_, UsbMsg> {
     let name = if d.product.is_empty() { &d.manufacturer } else { &d.product };
     let sub = format!("{} {}:{} {}Mbps", d.manufacturer, d.vid, d.pid, d.speed);
 
-    let bus = d.bus.clone();
-    let dev = d.dev.clone();
+    let sysfs_name = d.sysfs_name.clone();
 
     container(
         row![
@@ -196,7 +212,7 @@ fn device_row(d: &UsbDevice, disabled: bool) -> Element<'_, UsbMsg> {
                 text(name).size(13).color(name_col),
                 text(sub).size(11).color(C_DIM),
             ].width(Length::Fill),
-            action_btn("재인식", UsbMsg::RetrieveDev(bus, dev), !disabled, Color::from_rgb(0.25, 0.25, 0.35)),
+            action_btn("재인식", UsbMsg::RetrieveDev(sysfs_name), !disabled, Color::from_rgb(0.25, 0.25, 0.35)),
         ]
         .align_y(iced::Alignment::Center)
     )
@@ -260,6 +276,8 @@ async fn scan_usb() -> UsbStatus {
         let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
         // 실제 장치만 (usb1, 1-1 등; 포트 인터페이스 제외)
         if name.contains(':') { continue; }
+        // 루트 허브(usb1/usb2/...)는 재인식 대상 아님
+        if name.starts_with("usb") { continue; }
 
         let read = |f: &str| std::fs::read_to_string(path.join(f)).unwrap_or_default().trim().to_string();
         let vid = read("idVendor");
@@ -275,8 +293,13 @@ async fn scan_usb() -> UsbStatus {
         let highlight = vid == "047d" || vid == "0853";  // Kensington / Realforce
         let icon: &'static str = if vid == "047d" { "[M]" } else if vid == "0853" { "[K]" } else { "[U]" };
 
-        devices.push(UsbDevice { vid, pid, manufacturer, product, speed, bus, dev, icon, highlight });
+        devices.push(UsbDevice {
+            vid, pid, manufacturer, product, speed, bus, dev,
+            sysfs_name: name,
+            icon, highlight,
+        });
     }
+    devices.sort_by(|a, b| a.sysfs_name.cmp(&b.sysfs_name));
 
     // 열거 실패 포트
     let journal = runner::run("bash", &["-c", "journalctl -k -n 200 --no-pager 2>/dev/null"]).await;
