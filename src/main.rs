@@ -8,19 +8,21 @@ use iced::{
 use runner::CmdResult;
 use ui::{
     apps::{AppsMsg, AppsState},
+    audio::{AudioMsg, AudioState},
     cosmic_tweaks::{CosmicMsg, CosmicState},
     ime::{ImeMsg, ImeState},
     usb::{UsbMsg, UsbState},
 };
 
 #[derive(Debug, Clone, PartialEq)]
-enum Tab { Ime, Usb, Cosmic, Apps }
+enum Tab { Ime, Usb, Audio, Cosmic, Apps }
 
 #[derive(Debug, Clone)]
 enum Message {
     TabSelect(Tab),
     Ime(ImeMsg),
     Usb(UsbMsg),
+    Audio(AudioMsg),
     Cosmic(CosmicMsg),
     Apps(AppsMsg),
     CopyLog,
@@ -31,6 +33,7 @@ struct App {
     tab: Tab,
     ime: ImeState,
     usb: UsbState,
+    audio: AudioState,
     cosmic: CosmicState,
     apps: AppsState,
     output: String,
@@ -115,6 +118,7 @@ fn init() -> (App, Task<Message>) {
         tab: Tab::Ime,
         ime: ImeState::new(),
         usb: UsbState::new(),
+        audio: AudioState::new(),
         cosmic: CosmicState::new(),
         apps: AppsState::new(),
         output: String::new(),
@@ -122,6 +126,7 @@ fn init() -> (App, Task<Message>) {
     let task = Task::batch([
         Task::perform(async { () }, |_| Message::Ime(ImeMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Usb(UsbMsg::Refresh)),
+        Task::perform(async { () }, |_| Message::Audio(AudioMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Cosmic(CosmicMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Apps(AppsMsg::Refresh)),
     ]);
@@ -146,6 +151,11 @@ fn update(app: &mut App, msg: Message) -> Task<Message> {
             let (task, res) = app.usb.update(m);
             if let Some(r) = res { push_log(&mut app.output, r); }
             task.map(Message::Usb)
+        }
+        Message::Audio(m) => {
+            let (task, res) = app.audio.update(m);
+            if let Some(r) = res { push_log(&mut app.output, r); }
+            task.map(Message::Audio)
         }
         Message::Cosmic(m) => {
             let (task, res) = app.cosmic.update(m);
@@ -191,6 +201,7 @@ fn view(app: &App) -> Element<'_, Message> {
     let content: Element<'_, Message> = match &app.tab {
         Tab::Ime    => app.ime.view().map(Message::Ime),
         Tab::Usb    => app.usb.view().map(Message::Usb),
+        Tab::Audio  => app.audio.view().map(Message::Audio),
         Tab::Cosmic => app.cosmic.view().map(Message::Cosmic),
         Tab::Apps   => app.apps.view().map(Message::Apps),
     };
@@ -213,6 +224,7 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
     let tabs: &[(Tab, &str, &str)] = &[
         (Tab::Ime,    "IME",        "한글 입력기"),
         (Tab::Usb,    "USB",        "USB / 트랙볼"),
+        (Tab::Audio,  "오디오",     "마이크 테스트"),
         (Tab::Cosmic, "COSMIC",     "COSMIC 트윅"),
         (Tab::Apps,   "앱 관리",    "설치 / 제거"),
     ];
