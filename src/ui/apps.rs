@@ -189,28 +189,38 @@ impl AppsState {
                     echo "=== [6/8] 사용자 런처 (popmgr-ime-fix-v7) ==="
                     cat > "$HOME/.local/bin/kakaotalk" <<'LAUNCHER_EOF'
 #!/bin/bash
-# popmgr-ime-fix-v7 — Bottles KakaoTalk32 + 시스템 IM 자동 감지 + EGL NVIDIA path 명시
+# popmgr-ime-fix-v8 — Bottles KakaoTalk32 + 시스템 IM 자동 감지 + EGL NVIDIA path 명시 + 좀비 메인윈도우 검증
 WIN32_PREFIX="$HOME/.var/app/com.usebottles.bottles/data/bottles/bottles/KakaoTalk32"
 RUNNER="$HOME/.var/app/com.usebottles.bottles/data/bottles/runners/wine-11.10-staging-amd64"
 KAKAO_EXE="$WIN32_PREFIX/drive_c/Program Files/Kakao/KakaoTalk/KakaoTalk.exe"
 [ -z "$DISPLAY" ] && export DISPLAY=:1
 
-# 이미 실행 중이면 윈도우 활성화
+# 이미 실행 중이면 메인 윈도우(visible >100px)만 활성화 — 1x1 helper만 남은 좀비 케이스 차단
 if pgrep -f "KakaoTalk\.exe" >/dev/null 2>&1; then
-    wid=""
+    main_wid=""
     if command -v xdotool >/dev/null; then
-        wid=$(xdotool search --class "kakaotalk\.exe" 2>/dev/null | head -1)
-        [ -z "$wid" ] && wid=$(xdotool search --name "^KakaoTalk$" 2>/dev/null | head -1)
+        for w in $(xdotool search --class "kakaotalk\.exe" 2>/dev/null); do
+            width=$(xdotool getwindowgeometry --shell "$w" 2>/dev/null | grep ^WIDTH | cut -d= -f2)
+            [ -n "$width" ] && [ "$width" -gt 100 ] 2>/dev/null && { main_wid="$w"; break; }
+        done
+        [ -z "$main_wid" ] && for w in $(xdotool search --name "^KakaoTalk$" 2>/dev/null); do
+            width=$(xdotool getwindowgeometry --shell "$w" 2>/dev/null | grep ^WIDTH | cut -d= -f2)
+            [ -n "$width" ] && [ "$width" -gt 100 ] 2>/dev/null && { main_wid="$w"; break; }
+        done
     fi
-    if [ -n "$wid" ]; then
-        xdotool windowmap "$wid" 2>/dev/null
-        xdotool windowactivate "$wid" 2>/dev/null
-        xdotool windowraise "$wid" 2>/dev/null
+    if [ -n "$main_wid" ]; then
+        xdotool windowmap "$main_wid" 2>/dev/null
+        xdotool windowactivate "$main_wid" 2>/dev/null
+        xdotool windowraise "$main_wid" 2>/dev/null
         exit 0
     fi
+    # 좀비 → 청소 후 새로 띄움
     pkill -9 -f "KakaoTalk\.exe" 2>/dev/null
     pkill -9 -f "winedbg" 2>/dev/null
-    sleep 0.5
+    for pid in $(pgrep -f wineserver 2>/dev/null); do
+        [ -r "/proc/$pid/environ" ] && grep -qz "KakaoTalk32" "/proc/$pid/environ" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+    done
+    sleep 1
 fi
 
 # 좀비 KakaoTalk32 wineserver 정리
