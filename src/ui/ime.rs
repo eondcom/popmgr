@@ -497,8 +497,13 @@ async fn install_resume_hook() -> CmdResult {
     if let Err(e) = tokio::fs::write(tmp, RESUME_HOOK_SCRIPT).await {
         return CmdResult { success: false, output: format!("임시 파일 쓰기 실패: {e}") };
     }
+    // 디렉토리가 없는 배포판이 있음 (Pop!_OS 등) → mkdir -p 후 install
+    let dir = std::path::Path::new(RESUME_HOOK_PATH).parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "/etc/systemd/system-sleep".to_string());
     let cmd = format!(
-        "pkexec install -m 755 -o root -g root {tmp} {dst}",
+        "pkexec sh -c 'mkdir -p {dir} && install -m 755 -o root -g root {tmp} {dst}'",
+        dir = dir,
         tmp = tmp,
         dst = RESUME_HOOK_PATH,
     );
