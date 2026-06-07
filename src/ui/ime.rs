@@ -81,6 +81,8 @@ pub struct ImeStatus {
     pub snap_im_module_file: Option<String>,
     // 발견된 JetBrains IDE vmoptions (IME 옵션 누락 여부 포함)
     pub jetbrains_ides: Vec<JetBrainsVmOptions>,
+    // 절전 복귀 시 IME 데몬을 자동 재시작하는 system-sleep 훅 설치 여부
+    pub resume_hook_installed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +95,8 @@ pub enum ImeMsg {
     Apply,
     CleanShellInits,
     PatchJetBrains,
+    InstallResumeHook,
+    UninstallResumeHook,
     Done(CmdResult),
 }
 
@@ -205,6 +209,22 @@ impl ImeState {
                 );
                 (task, None)
             }
+            ImeMsg::InstallResumeHook => {
+                self.running = Some("Resume 훅 설치 중...".into());
+                let task = Task::perform(
+                    async { install_resume_hook().await },
+                    ImeMsg::Done,
+                );
+                (task, None)
+            }
+            ImeMsg::UninstallResumeHook => {
+                self.running = Some("Resume 훅 제거 중...".into());
+                let task = Task::perform(
+                    async { uninstall_resume_hook().await },
+                    ImeMsg::Done,
+                );
+                (task, None)
+            }
             ImeMsg::Done(r) => {
                 self.running = None;
                 let refresh = Task::perform(async { scan_ime_status().await }, ImeMsg::Refreshed);
@@ -256,6 +276,9 @@ impl ImeState {
             };
             let daemon_col = if st.daemon_running.is_some() { C_OK } else { C_WARN };
             col = col.push(text(daemon_txt).size(12).color(daemon_col));
+
+            col = col.push(Space::with_height(14));
+            col = col.push(resume_hook_card(st.resume_hook_installed, is_running));
 
             // ── 추가 진단 ─────────────────────────────────────
             if !st.shell_init_conflicts.is_empty() {
@@ -371,10 +394,14 @@ async fn scan_ime_status() -> ImeStatus {
     // 진단: 발견된 JetBrains IDE vmoptions
     let jetbrains_ides = find_jetbrains_vmoptions().await;
 
+    // 진단: 절전 복귀 IME 재시작 훅 설치 여부
+    let resume_hook_installed = detect_resume_hook();
+
     ImeStatus {
         installed_ibus, installed_fcitx5, installed_kime,
         active, daemon_running, env_match,
         shell_init_conflicts, snap_im_module_file, jetbrains_ides,
+        resume_hook_installed,
     }
 }
 
@@ -422,6 +449,81 @@ async fn scan_shell_init_conflicts(active: &ImeKind) -> Vec<ShellInitConflict> {
         }
     }
     out
+}
+
+// ── Resume 복구 훅 ─────────────────────────────────────────────
+// systemd-sleep post 훅: 절전 복귀 시 활성 IME 데몬을 재시작해
+// Wayland im 소켓 / DBus 채널이 끊긴 상태를 자동 복구한다.
+// 유휴 비용 0 (resume 이벤트 시 1회 실행).
+
+const RESUME_HOOK_PATH: &str = "/etc/systemd/system-sleep/zz-popmgr-ime-restart";
+
+const RESUME_HOOK_SCRIPT: &str = r#"#!/bin/sh
+# popmgr-resume-ime-hook: v1
+# Restart active IME daemon after wake to recover Korean input.
+
+[ "$1" = "post" ] || exit 0
+case "$2" in
+  suspend|hibernate|hybrid-sleep|suspend-then-hibernate) ;;
+  *) exit 0 ;;
+esac
+
+for d in /run/user/[0-9]*; do
+  uid="${d##*/}"
+  [ "$uid" -ge 1000 ] 2>/dev/null || continue
+  user="$(getent passwd "$uid" | cut -d: -f1)"
+  [ -n "$user" ] || continue
+
+  for daemon in fcitx5 ibus-daemon kime; do
+    pgrep -x -u "$uid" "$daemon" >/dev/null 2>&1 || continue
+    case "$daemon" in
+      fcitx5)      cmd="fcitx5 -d --replace" ;;
+      ibus-daemon) cmd="ibus-daemon -drxR" ;;
+      kime)        cmd="pkill -x kime; sleep 0.2; setsid kime" ;;
+    esac
+    runuser -u "$user" -- env DISPLAY=:0 XDG_RUNTIME_DIR="/run/user/$uid" \
+      sh -c "$cmd </dev/null >/dev/null 2>&1 &"
+    break
+  done
+done
+"#;
+
+fn detect_resume_hook() -> bool {
+    std::path::Path::new(RESUME_HOOK_PATH).exists()
+}
+
+async fn install_resume_hook() -> CmdResult {
+    let tmp = "/tmp/popmgr-resume-ime-hook.sh";
+    if let Err(e) = tokio::fs::write(tmp, RESUME_HOOK_SCRIPT).await {
+        return CmdResult { success: false, output: format!("임시 파일 쓰기 실패: {e}") };
+    }
+    let cmd = format!(
+        "pkexec install -m 755 -o root -g root {tmp} {dst}",
+        tmp = tmp,
+        dst = RESUME_HOOK_PATH,
+    );
+    let r = runner::run_sh(&cmd).await;
+    let _ = tokio::fs::remove_file(tmp).await;
+    if r.success {
+        CmdResult {
+            success: true,
+            output: format!(
+                "Resume 훅 설치 완료: {RESUME_HOOK_PATH}\n\n다음 절전 복귀부터 활성 IME 데몬이 자동 재시작됩니다."
+            ),
+        }
+    } else {
+        r
+    }
+}
+
+async fn uninstall_resume_hook() -> CmdResult {
+    let cmd = format!("pkexec rm -f {RESUME_HOOK_PATH}");
+    let r = runner::run_sh(&cmd).await;
+    if r.success {
+        CmdResult { success: true, output: format!("Resume 훅 제거: {RESUME_HOOK_PATH}") }
+    } else {
+        r
+    }
 }
 
 fn detect_snap_im_leak() -> Option<String> {
@@ -776,6 +878,55 @@ fn shell_conflict_card<'a>(
         .style(|_| iced::widget::container::Style {
             background: Some(iced::Background::Color(Color::from_rgb(0.12, 0.06, 0.05))),
             border: iced::Border { radius: 8.0.into(), color: C_ERR, width: 1.0 },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn resume_hook_card(installed: bool, disabled: bool) -> Element<'static, ImeMsg> {
+    let (title, title_col, desc, btn_label, btn_msg, btn_col) = if installed {
+        (
+            "[OK] 절전 복귀 IME 자동 복구 활성".to_string(),
+            C_OK,
+            "절전에서 깨어나면 system-sleep 훅이 실행 중인 IME 데몬을 자동 재시작합니다.\n위치: /etc/systemd/system-sleep/zz-popmgr-ime-restart".to_string(),
+            "훅 제거",
+            ImeMsg::UninstallResumeHook,
+            C_DIM,
+        )
+    } else {
+        (
+            "[권장] 절전 복귀 자동 복구 훅 미설치".to_string(),
+            C_WARN,
+            "절전에서 깨어나면 IME 채널이 끊겨 한글 입력이 안 되는 증상을 자동으로 복구합니다.\nsystemd-sleep post 훅을 설치합니다 (유휴 CPU 0, resume 시 1회만 실행).".to_string(),
+            "훅 설치 (pkexec)",
+            ImeMsg::InstallResumeHook,
+            C_BLUE,
+        )
+    };
+
+    let body = column![
+        text(title).size(13).color(title_col),
+        Space::with_height(4),
+        text(desc).size(11).color(C_DIM),
+        Space::with_height(8),
+        row![
+            Space::with_width(Length::Fill),
+            action_btn(btn_label, btn_msg, !disabled, btn_col),
+        ],
+    ];
+    container(body)
+        .width(Length::Fill)
+        .padding([12, 14])
+        .style(move |_| iced::widget::container::Style {
+            background: Some(iced::Background::Color(
+                if installed { Color::from_rgb(0.04, 0.10, 0.06) }
+                else         { Color::from_rgb(0.12, 0.08, 0.03) }
+            )),
+            border: iced::Border {
+                radius: 8.0.into(),
+                color: if installed { C_OK } else { C_WARN },
+                width: 1.0,
+            },
             ..Default::default()
         })
         .into()
