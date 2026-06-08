@@ -191,7 +191,7 @@ fn level_bar(peak_pct: f64) -> String {
     let filled = (peak_pct / 5.0).round() as usize;
     let filled = filled.min(20);
     let empty = 20 - filled;
-    format!("[{}{}] {:.1}%", "█".repeat(filled), "░".repeat(empty), peak_pct)
+    format!("[{}{}] {:.1}%", "■".repeat(filled), "□".repeat(empty), peak_pct)
 }
 
 async fn scan_audio() -> AudioStatus {
