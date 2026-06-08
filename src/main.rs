@@ -53,6 +53,7 @@ fn main() -> iced::Result {
         .theme(|_| iced::Theme::Dark)
         .font(include_bytes!("../assets/NanumGothic.ttf"))
         .font(include_bytes!("../assets/NanumSquareR.ttf"))
+        .font(include_bytes!("../assets/DejaVuSans.ttf")) // ✓ ✗ ⚠ █ ░ 등 기호 폴백
         .default_font(iced::Font::with_name("NanumSquare"))
         .subscription(subscription)
         .window(iced::window::Settings {

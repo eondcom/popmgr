@@ -265,7 +265,7 @@ xsetroot -cursor_name left_ptr 2>/dev/null
 "
 LAUNCHER_EOF
                     chmod +x "$HOME/.local/bin/kakaotalk"
-                    echo "● $HOME/.local/bin/kakaotalk"
+                    echo "✓ $HOME/.local/bin/kakaotalk"
 
                     echo
                     echo "=== [7/8] 사용자 desktop + 아이콘 ==="
@@ -304,7 +304,7 @@ SVG_EOF
                     gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 
                     echo
-                    echo "● KakaoTalk 검증 환경 설치 완료"
+                    echo "✓ KakaoTalk 검증 환경 설치 완료"
                     echo "  → 앱 메뉴/독에서 카오톡 클릭 → 정상 실행 + 한글 입력 안정"
                     echo "  → 검은/흰 대화창 없음 (builtin d3d DLL 적용)"
                     echo "  → 한 번 띄운 후 다시 클릭하면 윈도우 활성화 (트레이 없어도 OK)"
@@ -436,7 +436,7 @@ EOF
                     fi
 
                     echo
-                    echo "● KakaoTalk 설치 + 모든 보정 완료"
+                    echo "✓ KakaoTalk 설치 + 모든 보정 완료"
                     echo "  → 앱 메뉴/독에서 카카오톡 아이콘으로 실행하세요"
                     echo "  → 독 즐겨찾기 추가 시 빈 아이콘이면 한 번 빼고 다시 추가"
                 "##;
@@ -706,7 +706,7 @@ EOF
 
 fn kakaotalk_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'static, AppsMsg> {
     let installed = status.map(|s| s.kakaotalk_installed).unwrap_or(false);
-    let status_txt = if installed { "● 설치됨" } else { "○ 미설치" };
+    let status_txt = if installed { "✓ 설치됨" } else { "✗ 미설치" };
     let status_col = if installed { C_OK } else { C_DIM };
 
     let launcher = status.and_then(|s| s.kakaotalk_launcher.clone()).unwrap_or_default();
@@ -737,10 +737,10 @@ fn kakaotalk_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'stati
             let col_ = if wmclass_ok { C_DIM } else { C_WARN };
             left = left.push(text(format!("바로가기: {desktop} {wm_state}")).size(11).color(col_));
         }
-        let icon_state = if icon_ok { "● 아이콘 테마 등록됨" } else { "○ 아이콘 미등록 — 독 즐겨찾기 빈 칸" };
+        let icon_state = if icon_ok { "✓ 아이콘 테마 등록됨" } else { "✗ 아이콘 미등록 — 독 즐겨찾기 빈 칸" };
         let icon_c = if icon_ok { C_DIM } else { C_WARN };
         left = left.push(text(icon_state).size(11).color(icon_c));
-        let ime_state = if ime_patched { "● 한글 입력 안정화 적용됨 (popmgr-ime-fix-v1)" } else { "※ 한글 입력 가끔 안 됨 — IME 안정화 미적용" };
+        let ime_state = if ime_patched { "✓ 한글 입력 안정화 적용됨 (popmgr-ime-fix-v1)" } else { "⚠ 한글 입력 가끔 안 됨 — IME 안정화 미적용" };
         let ime_c = if ime_patched { C_DIM } else { C_WARN };
         left = left.push(text(ime_state).size(11).color(ime_c));
     }
@@ -758,7 +758,7 @@ fn kakaotalk_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'stati
     };
     right = right.push(action_btn(label, AppsMsg::InstallKakaotalk, !disabled, C_OK));
     if all_ok {
-        right = right.push(text("● 모든 설정 완료").size(11).color(C_OK));
+        right = right.push(text("✓ 모든 설정 완료").size(11).color(C_OK));
     }
 
     card(
@@ -777,7 +777,7 @@ fn pkg_row(idx: usize, pkg: &Package, disabled: bool) -> Element<'_, AppsMsg> {
     let kind_col = match pkg.kind { PkgKind::Apt => Color::from_rgb(0.3, 0.6, 0.9), PkgKind::Flatpak => Color::from_rgb(0.6, 0.4, 0.9) };
 
     let check_bg = if pkg.marked { C_ERR } else { Color::from_rgb(0.15, 0.15, 0.18) };
-    let check_txt = if pkg.marked { "●" } else { " " };
+    let check_txt = if pkg.marked { "✓" } else { " " };
 
     let checkbox = container(
         text(check_txt).size(12).color(Color::WHITE)
