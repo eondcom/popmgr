@@ -159,8 +159,8 @@ impl UsbState {
 
             // ktrackball 상태
             let (ktb_txt, ktb_col) = match st.ktrackball_pid {
-                Some(pid) => (format!("✓ ktrackball 실행 중 (PID {pid})"), C_OK),
-                None      => ("✗ ktrackball 중지됨".into(), C_ERR),
+                Some(pid) => (format!("● ktrackball 실행 중 (PID {pid})"), C_OK),
+                None      => ("○ ktrackball 중지됨".into(), C_ERR),
             };
             col = col.push(card(
                 column![
