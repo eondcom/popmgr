@@ -153,6 +153,8 @@ pub struct AudioState {
     pub lock: Option<AudioLock>,
     enforcing: bool,
     vref_fixing: bool,
+    /// 앱 시작 시 고정 설정 1회 전체 적용 (재부팅 후 볼륨/부스트 어긋남 보정)
+    startup_enforced: bool,
     pub scanned: bool,
     pub sink_vol: u32,
     pub source_vol: u32,
@@ -179,6 +181,7 @@ impl AudioState {
             lock: load_lock(),
             enforcing: false,
             vref_fixing: false,
+            startup_enforced: false,
             scanned: false,
             sink_vol: 0,
             source_vol: 0,
@@ -287,6 +290,27 @@ impl AudioState {
                                 .and_then(|ap| d.ports.iter().find(|p| p.name == ap));
                             test_choice(d, port)
                         });
+                    }
+                }
+
+                // 앱 시작 직후 1회: 고정 설정 전체 적용 (재부팅/로그인 후 상태 보정)
+                if !self.startup_enforced {
+                    self.startup_enforced = true;
+                    if let Some(lock) = self.lock.clone() {
+                        if self.sources.iter().any(|d| d.name == lock.source) {
+                            let boost_cmd = if lock.boost_ctl.is_empty() { String::new() } else {
+                                format!("amixer -c0 sset '{}' {} >/dev/null; ", lock.boost_ctl, lock.boost_val)
+                            };
+                            let script = format!(
+                                "pactl set-source-port '{src}' '{port}'; \
+                                 pactl set-source-volume '{src}' {vol}%; {boost_cmd}\
+                                 pactl set-default-source '{src}'; \
+                                 echo '시작 시 고정된 입력 설정 적용 ({label}, {vol}%, 부스트 +{bdb}dB)'",
+                                src = lock.source, port = lock.port, vol = lock.volume_pct,
+                                label = port_label_kr(&lock.port), bdb = lock.boost_val * 10,
+                            );
+                            return (apply(script, "고정 설정 적용됨".into()), None);
+                        }
                     }
                 }
 
