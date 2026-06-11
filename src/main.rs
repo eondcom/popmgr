@@ -43,6 +43,13 @@ struct App {
 }
 
 fn main() -> iced::Result {
+    // 루트 헬퍼 모드: pkexec popmgr --apply-vref /dev/snd/hwC0D0 0x1a 0x24
+    // (HDA hwdep은 CAP_SYS_RAWIO 필요 — 잭 마이크 바이어스 전원 제어용)
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|s| s.as_str()) == Some("--apply-vref") {
+        std::process::exit(apply_vref_cli(&args));
+    }
+
     if let Err(msg) = acquire_single_instance_lock() {
         eprintln!("{msg}");
         std::process::exit(0);
@@ -115,6 +122,54 @@ unsafe extern "C" {
     fn libc_flock(fd: i32, op: i32) -> i32;
     #[link_name = "getuid"]
     fn libc_getuid() -> u32;
+    #[link_name = "ioctl"]
+    fn libc_ioctl(fd: i32, req: u64, arg: *mut core::ffi::c_void) -> i32;
+}
+
+fn apply_vref_cli(args: &[String]) -> i32 {
+    use std::os::fd::AsRawFd;
+
+    const HDA_IOCTL_VERB_WRITE: u64 = 0xC008_4811;
+    const SET_PIN_WIDGET_CONTROL: u32 = 0x707;
+    const GET_PIN_WIDGET_CONTROL: u32 = 0xF07;
+    #[repr(C)]
+    struct HdaVerb { verb: u32, res: u32 }
+
+    if args.len() != 5 {
+        eprintln!("사용법: popmgr --apply-vref /dev/snd/hwC0D0 0x1a 0x24");
+        return 2;
+    }
+    let dev = &args[2];
+    if !dev.starts_with("/dev/snd/hwC") {
+        eprintln!("잘못된 장치 경로: {dev}");
+        return 2;
+    }
+    let hex = |s: &str| u32::from_str_radix(s.trim_start_matches("0x"), 16);
+    let (nid, val) = match (hex(&args[3]), hex(&args[4])) {
+        (Ok(n), Ok(v)) => (n, v),
+        _ => { eprintln!("16진수 파싱 실패: {} {}", args[3], args[4]); return 2; }
+    };
+
+    let f = match std::fs::OpenOptions::new().read(true).write(true).open(dev) {
+        Ok(f) => f,
+        Err(e) => { eprintln!("{dev} 열기 실패: {e}"); return 1; }
+    };
+    let run = |verb: u32, param: u32| -> Result<u32, i32> {
+        let mut v = HdaVerb { verb: (nid << 24) | (verb << 8) | param, res: 0 };
+        let rc = unsafe {
+            libc_ioctl(f.as_raw_fd(), HDA_IOCTL_VERB_WRITE, &mut v as *mut _ as *mut core::ffi::c_void)
+        };
+        if rc < 0 { Err(rc) } else { Ok(v.res) }
+    };
+
+    let before = run(GET_PIN_WIDGET_CONTROL, 0).unwrap_or(0xFFFF);
+    if run(SET_PIN_WIDGET_CONTROL, val).is_err() {
+        eprintln!("verb 전송 실패 (ioctl)");
+        return 1;
+    }
+    let after = run(GET_PIN_WIDGET_CONTROL, 0).unwrap_or(0xFFFF);
+    println!("핀 0x{nid:x} pin-ctl: 0x{before:x} -> 0x{after:x}");
+    if after == val { 0 } else { 1 }
 }
 
 fn init() -> (App, Task<Message>) {

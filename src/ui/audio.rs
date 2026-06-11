@@ -3,7 +3,7 @@ use iced::{
     Color, Element, Length, Task,
 };
 use crate::runner::{self, CmdResult};
-use super::ime::{action_btn, card, running_bar, C_BLUE, C_DIM, C_ERR, C_OK, C_WARN};
+use super::ime::{action_btn, card, running_bar, C_BLUE, C_DIM, C_ERR, C_GREEN, C_OK, C_WARN};
 
 const TEST_WAV: &str = "/tmp/popmgr-mictest.wav";
 
@@ -34,6 +34,19 @@ pub struct AudioScan {
     /// ALSA 잭 감지 상태 (이름, 꽂힘 여부) — PipeWire 포트 availability가
     /// "unknown"인 콤보잭에서도 물리 연결을 보여주기 위함
     pub jacks: Vec<(String, bool)>,
+    pub vref: Option<VrefInfo>,
+}
+
+/// 잭 마이크(핀마이크) 바이어스 전원 상태 — /proc/asound 코덱 덤프에서 파싱
+#[derive(Debug, Clone, PartialEq)]
+pub struct VrefInfo {
+    pub hwdev: String,      // /dev/snd/hwC0D0
+    pub nid: u32,           // Headphone Mic 핀 (예: 0x1a)
+    pub bias_on: bool,      // VREF_50/80/100이면 true (HIZ/GRD면 false)
+    pub vendor_id: String,  // 0x10ec0298
+    pub subsys_id: String,  // 0x1028087c
+    pub codec_addr: u32,
+    pub boot_patch: bool,   // 부팅 영구 패치 설치 여부
 }
 
 /// pick_list 항목 — id는 pactl 이름, label은 표시용
@@ -72,6 +85,10 @@ pub enum AudioMsg {
     ToggleSinkMute,
     ToggleSourceMute,
     Applied(CmdResult),
+    VrefOn,
+    VrefBootInstall,
+    VrefBootRemove,
+    PickTestTarget(Choice),
     TestMic,
     TestDone(MicTest),
     Play,
@@ -84,6 +101,7 @@ pub struct AudioState {
     pub default_sink: Option<String>,
     pub default_source: Option<String>,
     pub jacks: Vec<(String, bool)>,
+    pub vref: Option<VrefInfo>,
     pub scanned: bool,
     pub sink_vol: u32,
     pub source_vol: u32,
@@ -91,6 +109,9 @@ pub struct AudioState {
     source_dragging: bool,
     pub running: Option<String>,
     pub last_test: MicTest,
+    /// 테스트 녹음 대상 (id = "소스이름\t포트이름")
+    pub test_target: Option<Choice>,
+    pub last_test_label: String,
 }
 
 impl AudioState {
@@ -101,6 +122,7 @@ impl AudioState {
             default_sink: None,
             default_source: None,
             jacks: Vec::new(),
+            vref: None,
             scanned: false,
             sink_vol: 0,
             source_vol: 0,
@@ -108,6 +130,8 @@ impl AudioState {
             source_dragging: false,
             running: None,
             last_test: MicTest::None,
+            test_target: None,
+            last_test_label: String::new(),
         }
     }
 
@@ -119,6 +143,21 @@ impl AudioState {
     fn default_source_dev(&self) -> Option<&DeviceInfo> {
         let name = self.default_source.as_deref()?;
         self.sources.iter().find(|d| d.name == name)
+    }
+
+    /// 테스트 녹음 대상 후보: 모든 입력 장치 × 포트 조합
+    fn test_target_choices(&self) -> Vec<Choice> {
+        let mut out = Vec::new();
+        for d in &self.sources {
+            if d.ports.is_empty() {
+                out.push(test_choice(d, None));
+            } else {
+                for p in &d.ports {
+                    out.push(test_choice(d, Some(p)));
+                }
+            }
+        }
+        out
     }
 
     pub fn update(&mut self, msg: AudioMsg) -> (Task<AudioMsg>, Option<CmdResult>) {
@@ -133,6 +172,7 @@ impl AudioState {
                 self.default_sink = s.default_sink;
                 self.default_source = s.default_source;
                 self.jacks = s.jacks;
+                self.vref = s.vref;
                 self.scanned = true;
                 // 슬라이더 드래그 중에는 자동 새로고침이 값을 덮어쓰지 않도록
                 if !self.sink_dragging {
@@ -140,6 +180,19 @@ impl AudioState {
                 }
                 if !self.source_dragging {
                     self.source_vol = self.default_source_dev().and_then(|d| d.volume_pct).unwrap_or(0);
+                }
+                // 테스트 대상 초기화/검증
+                let valid: Vec<Choice> = self.test_target_choices();
+                match &self.test_target {
+                    Some(t) if valid.contains(t) => {}
+                    _ => {
+                        // 기본: 현재 기본 소스의 활성 포트
+                        self.test_target = self.default_source_dev().map(|d| {
+                            let port = d.active_port.as_deref()
+                                .and_then(|ap| d.ports.iter().find(|p| p.name == ap));
+                            test_choice(d, port)
+                        });
+                    }
                 }
                 (Task::none(), None)
             }
@@ -202,15 +255,57 @@ impl AudioState {
                 let label = if muted { "입력 음소거 해제" } else { "입력 음소거" };
                 (apply(script, label.into()), None)
             }
+            AudioMsg::VrefOn => {
+                let Some(v) = self.vref.clone() else { return (Task::none(), None) };
+                let exe = std::env::current_exe()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "popmgr".into());
+                self.running = Some("핀마이크 전원 켜는 중 (관리자 인증 필요)...".into());
+                let script = format!(
+                    "pkexec '{exe}' --apply-vref '{}' 0x{:x} 0x24 2>&1",
+                    v.hwdev, v.nid
+                );
+                (apply(script, "핀마이크 바이어스 전원 켜짐 (VREF_80)".into()), None)
+            }
+            AudioMsg::VrefBootInstall => {
+                let Some(v) = self.vref.clone() else { return (Task::none(), None) };
+                self.running = Some("부팅 영구 패치 설치 중 (관리자 인증 필요)...".into());
+                let fw = format!(
+                    "[codec]\n{} {} {}\n\n[verb]\n0x{:x} 0x707 0x24\n",
+                    v.vendor_id, v.subsys_id, v.codec_addr, v.nid
+                );
+                let script = format!(
+                    "pkexec bash -c 'cat > /lib/firmware/popmgr-pinmic.fw <<\"EOF\"\n{fw}EOF\n\
+                     cat > /etc/modprobe.d/popmgr-pinmic.conf <<\"EOF\"\noptions snd-hda-intel patch=popmgr-pinmic.fw\nEOF\n\
+                     echo \"부팅 패치 설치됨 — 재부팅 후에도 핀마이크 전원이 유지됩니다.\"' 2>&1"
+                );
+                (apply(script, "부팅 패치 설치됨".into()), None)
+            }
+            AudioMsg::VrefBootRemove => {
+                self.running = Some("부팅 패치 제거 중 (관리자 인증 필요)...".into());
+                let script = "pkexec bash -c 'rm -f /lib/firmware/popmgr-pinmic.fw /etc/modprobe.d/popmgr-pinmic.conf && echo 부팅\\ 패치\\ 제거됨' 2>&1".to_string();
+                (apply(script, "부팅 패치 제거됨".into()), None)
+            }
             AudioMsg::Applied(r) => {
+                self.running = None;
                 // 설정 반영 후 상태 재스캔
                 let t = Task::perform(async { scan_audio().await }, AudioMsg::Refreshed);
                 (t, Some(r))
             }
+            AudioMsg::PickTestTarget(c) => {
+                self.test_target = Some(c);
+                (Task::none(), None)
+            }
             AudioMsg::TestMic => {
-                self.running = Some("녹음 중 (2초)...".into());
+                let target = self.test_target.as_ref().map(|c| {
+                    let (s, p) = c.id.split_once('\t').unwrap_or((c.id.as_str(), ""));
+                    (s.to_string(), p.to_string())
+                });
+                self.last_test_label = self.test_target.as_ref()
+                    .map(|c| c.label.clone()).unwrap_or_else(|| "기본 입력".into());
+                self.running = Some(format!("녹음 중 (2초)... [{}]", self.last_test_label));
                 self.last_test = MicTest::Recording;
-                let t = Task::perform(async { test_mic().await }, AudioMsg::TestDone);
+                let t = Task::perform(async move { test_mic(target).await }, AudioMsg::TestDone);
                 (t, None)
             }
             AudioMsg::TestDone(r) => {
@@ -220,8 +315,8 @@ impl AudioState {
                     MicTest::Ok { peak_pct, rms_pct, samples } => CmdResult {
                         success: *peak_pct > 1.0,
                         output: format!(
-                            "마이크 테스트: peak {:.1}%, RMS {:.2}%, 샘플 {}",
-                            peak_pct, rms_pct, samples
+                            "마이크 테스트 [{}]: peak {:.1}%, RMS {:.2}%, 샘플 {}",
+                            self.last_test_label, peak_pct, rms_pct, samples
                         ),
                     },
                     MicTest::Failed(e) => CmdResult { success: false, output: format!("마이크 테스트 실패: {e}") },
@@ -283,6 +378,12 @@ impl AudioState {
         col = col.push(jack_card(&self.jacks));
         col = col.push(Space::with_height(12));
 
+        // 핀마이크 전원(바이어스) 카드 — 꺼져 있으면 잭 마이크가 무전원이라 지지직만 녹음됨
+        if let Some(v) = &self.vref {
+            col = col.push(vref_card(v, is_running));
+            col = col.push(Space::with_height(12));
+        }
+
         // 입력 장치 카드
         let mic_plugged = self.jacks.iter().any(|(n, on)| *on && n.contains("Mic"));
         let active_input_port = self.default_source_dev().and_then(|d| d.active_port.as_deref());
@@ -307,8 +408,23 @@ impl AudioState {
         ));
         col = col.push(Space::with_height(14));
 
+        // 테스트 대상 선택 (어느 입력으로 녹음할지)
+        let test_opts = self.test_target_choices();
+        if !test_opts.is_empty() {
+            col = col.push(
+                row![
+                    container(text("테스트 입력").size(12).color(C_DIM)).width(80),
+                    pick_list(test_opts, self.test_target.clone(), AudioMsg::PickTestTarget)
+                        .text_size(12)
+                        .width(Length::Fill),
+                ]
+                .align_y(iced::Alignment::Center)
+            );
+            col = col.push(Space::with_height(8));
+        }
+
         // 테스트 결과
-        let result_card = test_result_card(&self.last_test);
+        let result_card = test_result_card(&self.last_test, &self.last_test_label);
         col = col.push(result_card);
         col = col.push(Space::with_height(16));
 
@@ -416,6 +532,40 @@ fn device_card<'a>(
     card(body)
 }
 
+fn vref_card(v: &VrefInfo, is_busy: bool) -> Element<'_, AudioMsg> {
+    let (mark, state, scol) = if v.bias_on {
+        ("●", "켜짐 (VREF_80) — 핀마이크에 전원 공급 중", C_OK)
+    } else {
+        ("○", "꺼짐 (HIZ) — 이 상태에선 핀마이크가 지지직만 녹음됩니다", C_ERR)
+    };
+
+    let mut body = column![
+        text("핀마이크 전원 (잭 마이크 바이어스)").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+        Space::with_height(8),
+        row![
+            text(format!("{mark} {state}")).size(12).color(scol),
+        ],
+        Space::with_height(4),
+        text(format!("코덱 핀 0x{:x} · {}", v.nid, if v.boot_patch { "부팅 패치 설치됨 (재부팅에도 유지)" } else { "부팅 패치 없음 (재부팅/절전 후 다시 켜야 함)" }))
+            .size(11).color(C_DIM),
+        Space::with_height(8),
+    ];
+
+    let mut actions = row![Space::with_width(Length::Fill)].align_y(iced::Alignment::Center);
+    if !v.bias_on {
+        actions = actions.push(action_btn("지금 켜기", AudioMsg::VrefOn, !is_busy, C_BLUE));
+        actions = actions.push(Space::with_width(8));
+    }
+    if v.boot_patch {
+        actions = actions.push(action_btn("부팅 패치 제거", AudioMsg::VrefBootRemove, !is_busy, Color::from_rgb(0.5, 0.3, 0.2)));
+    } else {
+        actions = actions.push(action_btn("부팅 시 영구 적용", AudioMsg::VrefBootInstall, !is_busy, C_GREEN));
+    }
+    body = body.push(actions);
+
+    card(body)
+}
+
 fn jack_card(jacks: &[(String, bool)]) -> Element<'_, AudioMsg> {
     let mut body = column![
         text("3.5mm 잭 감지 (하드웨어)").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
@@ -459,6 +609,20 @@ fn device_choice(d: &DeviceInfo) -> Choice {
     Choice { id: d.name.clone(), label }
 }
 
+fn test_choice(d: &DeviceInfo, p: Option<&PortInfo>) -> Choice {
+    let dev_label = if d.desc.is_empty() { d.name.clone() } else { d.desc.clone() };
+    match p {
+        Some(p) => {
+            let port_label = if p.desc.is_empty() { p.name.clone() } else { p.desc.clone() };
+            Choice {
+                id: format!("{}\t{}", d.name, p.name),
+                label: format!("{port_label} — {dev_label}"),
+            }
+        }
+        None => Choice { id: format!("{}\t", d.name), label: dev_label },
+    }
+}
+
 fn port_choice(p: &PortInfo) -> Choice {
     let mut label = if p.desc.is_empty() { p.name.clone() } else { p.desc.clone() };
     if p.available == Some(false) {
@@ -483,7 +647,15 @@ fn apply(script: String, ok_msg: String) -> Task<AudioMsg> {
     )
 }
 
-fn test_result_card(test: &MicTest) -> Element<'_, AudioMsg> {
+fn test_result_card<'a>(test: &'a MicTest, label: &'a str) -> Element<'a, AudioMsg> {
+    let target_line: Element<'a, AudioMsg> = if label.is_empty() {
+        Space::with_height(0).into()
+    } else {
+        column![
+            text(format!("대상: {label}")).size(11).color(C_DIM),
+            Space::with_height(4),
+        ].into()
+    };
     match test {
         MicTest::None => card(
             text("테스트 버튼을 눌러 마이크 입력을 확인하세요.").size(12).color(C_DIM)
@@ -508,6 +680,7 @@ fn test_result_card(test: &MicTest) -> Element<'_, AudioMsg> {
             };
             card(
                 column![
+                    target_line,
                     row![
                         text("결과: ").size(13),
                         text(verdict).size(13).color(vcol),
@@ -557,7 +730,62 @@ async fn scan_audio() -> AudioScan {
         default_sink: trim_name(&dsink_r),
         default_source: trim_name(&dsource_r),
         jacks: parse_jacks(&jacks_r.output),
+        vref: scan_vref(),
     }
+}
+
+/// /proc/asound/cardN/codec#M에서 Headphone Mic 핀의 바이어스(VREF) 상태 파싱.
+/// hwdep verb 쓰기는 루트가 필요하지만 proc 읽기는 누구나 가능.
+fn scan_vref() -> Option<VrefInfo> {
+    for cardn in 0..8u32 {
+        for codecn in 0..4u32 {
+            let path = format!("/proc/asound/card{cardn}/codec#{codecn}");
+            let Ok(txt) = std::fs::read_to_string(&path) else { continue };
+            if !txt.contains("Headphone Mic Boost") { continue; }
+
+            let mut vendor_id = String::new();
+            let mut subsys_id = String::new();
+            let mut codec_addr = 0u32;
+            let mut cur_nid: Option<u32> = None;
+            let mut target_nid: Option<u32> = None;
+            let mut target_pinctl = String::new();
+
+            for line in txt.lines() {
+                let t = line.trim();
+                if let Some(v) = t.strip_prefix("Vendor Id:") {
+                    vendor_id = v.trim().to_string();
+                } else if let Some(v) = t.strip_prefix("Subsystem Id:") {
+                    subsys_id = v.trim().to_string();
+                } else if let Some(v) = t.strip_prefix("Address:") {
+                    codec_addr = v.trim().parse().unwrap_or(0);
+                } else if let Some(rest) = t.strip_prefix("Node 0x") {
+                    cur_nid = rest.split_whitespace().next()
+                        .and_then(|h| u32::from_str_radix(h, 16).ok());
+                } else if t.contains("name=\"Headphone Mic Boost Volume\"") {
+                    target_nid = cur_nid;
+                } else if let Some(v) = t.strip_prefix("Pin-ctls:") {
+                    if cur_nid.is_some() && cur_nid == target_nid {
+                        target_pinctl = v.trim().to_string();
+                    }
+                }
+            }
+
+            let nid = target_nid?;
+            let bias_on = target_pinctl.contains("VREF_80")
+                || target_pinctl.contains("VREF_100")
+                || target_pinctl.contains("VREF_50");
+            return Some(VrefInfo {
+                hwdev: format!("/dev/snd/hwC{cardn}D{codec_addr}"),
+                nid,
+                bias_on,
+                vendor_id,
+                subsys_id,
+                codec_addr,
+                boot_patch: std::path::Path::new("/etc/modprobe.d/popmgr-pinmic.conf").exists(),
+            });
+        }
+    }
+    None
 }
 
 /// `amixer contents`에서 iface=CARD 잭 감지 항목 추출.
@@ -678,11 +906,25 @@ fn parse_first_percent(s: &str) -> Option<u32> {
     None
 }
 
-async fn test_mic() -> MicTest {
+async fn test_mic(target: Option<(String, String)>) -> MicTest {
     let _ = std::fs::remove_file(TEST_WAV);
-    let r = runner::run("arecord", &[
-        "-D", "pulse", "-f", "S16_LE", "-r", "48000", "-c", "1", "-d", "2", TEST_WAV
-    ]).await;
+    let r = match &target {
+        Some((src, port)) => {
+            if !port.is_empty() {
+                let pr = runner::run("pactl", &["set-source-port", src, port]).await;
+                if !pr.success {
+                    return MicTest::Failed(format!("포트 전환 실패: {}", pr.output.trim()));
+                }
+            }
+            // 특정 소스에서 직접 녹음 (기본 입력과 무관하게)
+            runner::run_sh(&format!(
+                "PULSE_SOURCE='{src}' arecord -D pulse -f S16_LE -r 48000 -c 1 -d 2 {TEST_WAV}"
+            )).await
+        }
+        None => runner::run("arecord", &[
+            "-D", "pulse", "-f", "S16_LE", "-r", "48000", "-c", "1", "-d", "2", TEST_WAV
+        ]).await,
+    };
     if !r.success {
         return MicTest::Failed(r.output.trim().to_string());
     }
