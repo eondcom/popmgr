@@ -225,7 +225,7 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
     let tabs: &[(Tab, &str, &str)] = &[
         (Tab::Ime,    "IME",        "한글 입력기"),
         (Tab::Usb,    "USB",        "USB / 트랙볼"),
-        (Tab::Audio,  "오디오",     "마이크 테스트"),
+        (Tab::Audio,  "오디오",     "입출력 / 마이크"),
         (Tab::Cosmic, "COSMIC",     "COSMIC 트윅"),
         (Tab::Apps,   "앱 관리",    "설치 / 제거"),
     ];

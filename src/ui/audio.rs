@@ -1,5 +1,5 @@
 use iced::{
-    widget::{column, container, row, scrollable, text, Space},
+    widget::{column, container, pick_list, row, scrollable, slider, text, Space},
     Color, Element, Length, Task,
 };
 use crate::runner::{self, CmdResult};
@@ -7,12 +7,43 @@ use super::ime::{action_btn, card, running_bar, C_BLUE, C_DIM, C_ERR, C_OK, C_WA
 
 const TEST_WAV: &str = "/tmp/popmgr-mictest.wav";
 
-#[derive(Debug, Clone)]
-pub struct AudioStatus {
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortInfo {
+    pub name: String,
+    pub desc: String,
+    /// Some(true)=연결됨, Some(false)=연결 안 됨, None=알 수 없음
+    pub available: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceInfo {
+    pub name: String,
+    pub desc: String,
+    pub ports: Vec<PortInfo>,
     pub active_port: Option<String>,
-    pub source_volume_pct: Option<u32>,
-    pub source_muted: bool,
+    pub volume_pct: Option<u32>,
+    pub muted: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AudioScan {
+    pub sinks: Vec<DeviceInfo>,
+    pub sources: Vec<DeviceInfo>,
+    pub default_sink: Option<String>,
     pub default_source: Option<String>,
+}
+
+/// pick_list 항목 — id는 pactl 이름, label은 표시용
+#[derive(Debug, Clone, PartialEq)]
+pub struct Choice {
+    pub id: String,
+    pub label: String,
+}
+
+impl std::fmt::Display for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -26,7 +57,18 @@ pub enum MicTest {
 #[derive(Debug, Clone)]
 pub enum AudioMsg {
     Refresh,
-    Refreshed(AudioStatus),
+    Refreshed(AudioScan),
+    PickSink(Choice),
+    PickSinkPort(Choice),
+    PickSource(Choice),
+    PickSourcePort(Choice),
+    SinkVol(u32),
+    SinkVolCommit,
+    SourceVol(u32),
+    SourceVolCommit,
+    ToggleSinkMute,
+    ToggleSourceMute,
+    Applied(CmdResult),
     TestMic,
     TestDone(MicTest),
     Play,
@@ -34,14 +76,40 @@ pub enum AudioMsg {
 }
 
 pub struct AudioState {
-    pub status: Option<AudioStatus>,
+    pub sinks: Vec<DeviceInfo>,
+    pub sources: Vec<DeviceInfo>,
+    pub default_sink: Option<String>,
+    pub default_source: Option<String>,
+    pub scanned: bool,
+    pub sink_vol: u32,
+    pub source_vol: u32,
     pub running: Option<String>,
     pub last_test: MicTest,
 }
 
 impl AudioState {
     pub fn new() -> Self {
-        Self { status: None, running: None, last_test: MicTest::None }
+        Self {
+            sinks: Vec::new(),
+            sources: Vec::new(),
+            default_sink: None,
+            default_source: None,
+            scanned: false,
+            sink_vol: 0,
+            source_vol: 0,
+            running: None,
+            last_test: MicTest::None,
+        }
+    }
+
+    fn default_sink_dev(&self) -> Option<&DeviceInfo> {
+        let name = self.default_sink.as_deref()?;
+        self.sinks.iter().find(|d| d.name == name)
+    }
+
+    fn default_source_dev(&self) -> Option<&DeviceInfo> {
+        let name = self.default_source.as_deref()?;
+        self.sources.iter().find(|d| d.name == name)
     }
 
     pub fn update(&mut self, msg: AudioMsg) -> (Task<AudioMsg>, Option<CmdResult>) {
@@ -50,7 +118,78 @@ impl AudioState {
                 let t = Task::perform(async { scan_audio().await }, AudioMsg::Refreshed);
                 (t, None)
             }
-            AudioMsg::Refreshed(s) => { self.status = Some(s); (Task::none(), None) }
+            AudioMsg::Refreshed(s) => {
+                self.sinks = s.sinks;
+                self.sources = s.sources;
+                self.default_sink = s.default_sink;
+                self.default_source = s.default_source;
+                self.scanned = true;
+                self.sink_vol = self.default_sink_dev().and_then(|d| d.volume_pct).unwrap_or(0);
+                self.source_vol = self.default_source_dev().and_then(|d| d.volume_pct).unwrap_or(0);
+                (Task::none(), None)
+            }
+            AudioMsg::PickSink(c) => {
+                // 기본 출력 변경 + 재생 중인 스트림도 함께 이동
+                let script = format!(
+                    "pactl set-default-sink '{id}' && \
+                     pactl list short sink-inputs | cut -f1 | while read -r i; do \
+                       pactl move-sink-input \"$i\" '{id}' 2>/dev/null || true; done",
+                    id = c.id
+                );
+                (apply(script, format!("기본 출력 장치 → {}", c.label)), None)
+            }
+            AudioMsg::PickSource(c) => {
+                let script = format!(
+                    "pactl set-default-source '{id}' && \
+                     pactl list short source-outputs | cut -f1 | while read -r i; do \
+                       pactl move-source-output \"$i\" '{id}' 2>/dev/null || true; done",
+                    id = c.id
+                );
+                (apply(script, format!("기본 입력 장치 → {}", c.label)), None)
+            }
+            AudioMsg::PickSinkPort(c) => {
+                let Some(sink) = self.default_sink.clone() else { return (Task::none(), None) };
+                let script = format!("pactl set-sink-port '{sink}' '{}'", c.id);
+                (apply(script, format!("출력 포트 → {}", c.label)), None)
+            }
+            AudioMsg::PickSourcePort(c) => {
+                let Some(src) = self.default_source.clone() else { return (Task::none(), None) };
+                let script = format!("pactl set-source-port '{src}' '{}'", c.id);
+                (apply(script, format!("입력 포트 → {}", c.label)), None)
+            }
+            AudioMsg::SinkVol(v) => { self.sink_vol = v; (Task::none(), None) }
+            AudioMsg::SourceVol(v) => { self.source_vol = v; (Task::none(), None) }
+            AudioMsg::SinkVolCommit => {
+                let Some(sink) = self.default_sink.clone() else { return (Task::none(), None) };
+                let v = self.sink_vol;
+                let script = format!("pactl set-sink-volume '{sink}' {v}%");
+                (apply(script, format!("출력 볼륨 → {v}%")), None)
+            }
+            AudioMsg::SourceVolCommit => {
+                let Some(src) = self.default_source.clone() else { return (Task::none(), None) };
+                let v = self.source_vol;
+                let script = format!("pactl set-source-volume '{src}' {v}%");
+                (apply(script, format!("입력 볼륨 → {v}%")), None)
+            }
+            AudioMsg::ToggleSinkMute => {
+                let Some(sink) = self.default_sink.clone() else { return (Task::none(), None) };
+                let muted = self.default_sink_dev().map(|d| d.muted).unwrap_or(false);
+                let script = format!("pactl set-sink-mute '{sink}' toggle");
+                let label = if muted { "출력 음소거 해제" } else { "출력 음소거" };
+                (apply(script, label.into()), None)
+            }
+            AudioMsg::ToggleSourceMute => {
+                let Some(src) = self.default_source.clone() else { return (Task::none(), None) };
+                let muted = self.default_source_dev().map(|d| d.muted).unwrap_or(false);
+                let script = format!("pactl set-source-mute '{src}' toggle");
+                let label = if muted { "입력 음소거 해제" } else { "입력 음소거" };
+                (apply(script, label.into()), None)
+            }
+            AudioMsg::Applied(r) => {
+                // 설정 반영 후 상태 재스캔
+                let t = Task::perform(async { scan_audio().await }, AudioMsg::Refreshed);
+                (t, Some(r))
+            }
             AudioMsg::TestMic => {
                 self.running = Some("녹음 중 (2초)...".into());
                 self.last_test = MicTest::Recording;
@@ -92,7 +231,7 @@ impl AudioState {
         let mut col = column![
             text("오디오").size(20),
             Space::with_height(6),
-            text("3.5mm 잭/내장 마이크 입력을 빠르게 검증합니다.")
+            text("입력/출력 장치와 포트(스피커·헤드폰·핀마이크 등)를 선택하고 마이크를 검증합니다.")
                 .size(11)
                 .color(C_DIM),
             Space::with_height(16),
@@ -102,28 +241,41 @@ impl AudioState {
             col = col.push(running_bar(label)).push(Space::with_height(12));
         }
 
-        // 현재 상태
-        let status_card: Element<'_, AudioMsg> = if let Some(st) = &self.status {
-            let port = st.active_port.as_deref().unwrap_or("(없음)");
-            let vol = st.source_volume_pct.map(|v| format!("{v}%")).unwrap_or_else(|| "?".into());
-            let mute_txt = if st.source_muted { "Muted" } else { "Unmuted" };
-            let mute_col = if st.source_muted { C_ERR } else { C_OK };
-            card(
-                column![
-                    text("기본 입력 장치").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
-                    Space::with_height(6),
-                    text(format!("활성 포트: {port}")).size(12),
-                    text(format!("볼륨: {vol}")).size(12),
-                    row![
-                        text("상태: ").size(12),
-                        text(mute_txt).size(12).color(mute_col),
-                    ],
-                ]
-            )
-        } else {
-            text("스캔 중...").size(13).color(C_DIM).into()
-        };
-        col = col.push(status_card);
+        if !self.scanned {
+            col = col.push(text("스캔 중...").size(13).color(C_DIM));
+            return scrollable(container(col).padding([4, 0])).into();
+        }
+
+        // 출력 장치 카드
+        col = col.push(device_card(
+            "출력 (스피커 / 헤드폰)",
+            &self.sinks,
+            self.default_sink_dev(),
+            self.sink_vol,
+            100,
+            AudioMsg::PickSink,
+            AudioMsg::PickSinkPort,
+            AudioMsg::SinkVol,
+            AudioMsg::SinkVolCommit,
+            AudioMsg::ToggleSinkMute,
+            None,
+        ));
+        col = col.push(Space::with_height(12));
+
+        // 입력 장치 카드
+        col = col.push(device_card(
+            "입력 (마이크)",
+            &self.sources,
+            self.default_source_dev(),
+            self.source_vol,
+            150,
+            AudioMsg::PickSource,
+            AudioMsg::PickSourcePort,
+            AudioMsg::SourceVol,
+            AudioMsg::SourceVolCommit,
+            AudioMsg::ToggleSourceMute,
+            Some("3.5mm 잭에 꽂은 핀마이크가 인식되지 않으면 포트를 '마이크' 또는 '헤드셋 마이크'로 바꿔보세요."),
+        ));
         col = col.push(Space::with_height(14));
 
         // 테스트 결과
@@ -135,6 +287,8 @@ impl AudioState {
         let has_recording = matches!(self.last_test, MicTest::Ok { .. });
         let mut actions = row![
             Space::with_width(Length::Fill),
+            action_btn("새로고침", AudioMsg::Refresh, !is_running, Color::from_rgb(0.3, 0.3, 0.4)),
+            Space::with_width(8),
             action_btn("마이크 테스트 (2초)", AudioMsg::TestMic, !is_running, C_BLUE),
         ].align_y(iced::Alignment::Center);
         if has_recording {
@@ -145,6 +299,121 @@ impl AudioState {
 
         scrollable(container(col).padding([4, 0])).into()
     }
+}
+
+fn device_card<'a>(
+    title: &'a str,
+    devices: &[DeviceInfo],
+    default_dev: Option<&DeviceInfo>,
+    vol: u32,
+    vol_max: u32,
+    pick_dev: fn(Choice) -> AudioMsg,
+    pick_port: fn(Choice) -> AudioMsg,
+    on_vol: fn(u32) -> AudioMsg,
+    vol_commit: AudioMsg,
+    toggle_mute: AudioMsg,
+    hint: Option<&'a str>,
+) -> Element<'a, AudioMsg> {
+    let mut body = column![
+        text(title).size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+        Space::with_height(8),
+    ];
+
+    if devices.is_empty() {
+        body = body.push(text("장치 없음").size(12).color(C_DIM));
+        return card(body);
+    }
+
+    // 장치 선택
+    let dev_opts: Vec<Choice> = devices.iter().map(device_choice).collect();
+    let dev_selected = default_dev.map(device_choice);
+    body = body.push(
+        row![
+            container(text("장치").size(12).color(C_DIM)).width(50),
+            pick_list(dev_opts, dev_selected, pick_dev)
+                .text_size(12)
+                .width(Length::Fill),
+        ]
+        .align_y(iced::Alignment::Center)
+    );
+
+    if let Some(dev) = default_dev {
+        // 포트 선택 (포트가 있는 장치만 — 블루투스/USB는 포트가 없을 수 있음)
+        if !dev.ports.is_empty() {
+            let port_opts: Vec<Choice> = dev.ports.iter().map(port_choice).collect();
+            let port_selected = dev.active_port.as_deref().and_then(|ap| {
+                dev.ports.iter().find(|p| p.name == ap).map(port_choice)
+            });
+            body = body.push(Space::with_height(6));
+            body = body.push(
+                row![
+                    container(text("포트").size(12).color(C_DIM)).width(50),
+                    pick_list(port_opts, port_selected, pick_port)
+                        .text_size(12)
+                        .width(Length::Fill),
+                ]
+                .align_y(iced::Alignment::Center)
+            );
+        }
+
+        // 볼륨 + 음소거
+        let mute_label = if dev.muted { "음소거 해제" } else { "음소거" };
+        let mute_color = if dev.muted { C_ERR } else { Color::from_rgb(0.3, 0.3, 0.4) };
+        body = body.push(Space::with_height(8));
+        body = body.push(
+            row![
+                container(text("볼륨").size(12).color(C_DIM)).width(50),
+                slider(0..=vol_max, vol, on_vol).on_release(vol_commit).width(Length::Fill),
+                Space::with_width(8),
+                container(
+                    text(format!("{vol}%")).size(12)
+                        .color(if dev.muted { C_ERR } else { Color::WHITE })
+                ).width(40),
+                action_btn(mute_label, toggle_mute, true, mute_color),
+            ]
+            .align_y(iced::Alignment::Center)
+        );
+        if dev.muted {
+            body = body.push(Space::with_height(4));
+            body = body.push(text("현재 음소거 상태입니다.").size(11).color(C_ERR));
+        }
+    }
+
+    if let Some(h) = hint {
+        body = body.push(Space::with_height(8));
+        body = body.push(text(h).size(11).color(C_WARN));
+    }
+
+    card(body)
+}
+
+fn device_choice(d: &DeviceInfo) -> Choice {
+    let label = if d.desc.is_empty() { d.name.clone() } else { d.desc.clone() };
+    Choice { id: d.name.clone(), label }
+}
+
+fn port_choice(p: &PortInfo) -> Choice {
+    let mut label = if p.desc.is_empty() { p.name.clone() } else { p.desc.clone() };
+    if p.available == Some(false) {
+        label.push_str(" (연결 안 됨)");
+    }
+    Choice { id: p.name.clone(), label }
+}
+
+fn apply(script: String, ok_msg: String) -> Task<AudioMsg> {
+    Task::perform(
+        async move {
+            let r = runner::run_sh(&script).await;
+            if r.success && r.output.trim().is_empty() {
+                CmdResult { success: true, output: ok_msg }
+            } else if r.success {
+                CmdResult { success: true, output: format!("{ok_msg}\n{}", r.output.trim()) }
+            } else {
+                r
+            }
+        },
+        AudioMsg::Applied,
+    )
 }
 
 fn test_result_card(test: &MicTest) -> Element<'_, AudioMsg> {
@@ -194,43 +463,104 @@ fn level_bar(peak_pct: f64) -> String {
     format!("[{}{}] {:.1}%", "■".repeat(filled), "□".repeat(empty), peak_pct)
 }
 
-async fn scan_audio() -> AudioStatus {
-    let default_source = {
-        let r = runner::run("pactl", &["get-default-source"]).await;
-        if r.success {
-            let s = r.output.trim().to_string();
-            if s.is_empty() { None } else { Some(s) }
-        } else { None }
+async fn scan_audio() -> AudioScan {
+    let (sinks_r, sources_r, dsink_r, dsource_r) = tokio::join!(
+        runner::run("pactl", &["list", "sinks"]),
+        runner::run("pactl", &["list", "sources"]),
+        runner::run("pactl", &["get-default-sink"]),
+        runner::run("pactl", &["get-default-source"]),
+    );
+
+    let sinks = parse_devices(&sinks_r.output);
+    let sources = parse_devices(&sources_r.output)
+        .into_iter()
+        .filter(|d| !d.name.ends_with(".monitor"))
+        .collect();
+
+    let trim_name = |r: &CmdResult| -> Option<String> {
+        if !r.success { return None; }
+        let s = r.output.trim().to_string();
+        if s.is_empty() { None } else { Some(s) }
     };
 
-    let mut active_port = None;
-    let mut source_volume_pct = None;
-    let mut source_muted = false;
+    AudioScan {
+        sinks,
+        sources,
+        default_sink: trim_name(&dsink_r),
+        default_source: trim_name(&dsource_r),
+    }
+}
 
-    if let Some(ref name) = default_source {
-        let r = runner::run("pactl", &["list", "sources"]).await;
-        let mut in_target = false;
-        for line in r.output.lines() {
-            let t = line.trim();
-            if t.starts_with("Name:") {
-                let v = t.trim_start_matches("Name:").trim();
-                in_target = v == name;
+/// `pactl list sinks|sources` 텍스트 출력 파싱.
+/// (pactl 16.1의 --format=json은 한글 description을 "(null)"로 깨뜨리는 버그가 있어 텍스트 파싱 사용)
+fn parse_devices(out: &str) -> Vec<DeviceInfo> {
+    let mut devs: Vec<DeviceInfo> = Vec::new();
+    let mut cur: Option<DeviceInfo> = None;
+    let mut in_ports = false;
+
+    for line in out.lines() {
+        let t = line.trim();
+
+        if let Some(v) = t.strip_prefix("Name:") {
+            if let Some(d) = cur.take() { devs.push(d); }
+            in_ports = false;
+            cur = Some(DeviceInfo {
+                name: v.trim().to_string(),
+                desc: String::new(),
+                ports: Vec::new(),
+                active_port: None,
+                volume_pct: None,
+                muted: false,
+            });
+            continue;
+        }
+        let Some(dev) = cur.as_mut() else { continue };
+
+        if in_ports {
+            if t.starts_with("Active Port:") || t.starts_with("Formats:") || t.starts_with("Properties:") {
+                in_ports = false;
+                // 아래 일반 파싱으로 계속 진행
+            } else if let Some((pname, rest)) = t.split_once(':') {
+                let (desc, available) = split_port_desc(rest.trim());
+                dev.ports.push(PortInfo { name: pname.trim().to_string(), desc, available });
+                continue;
+            } else {
                 continue;
             }
-            if !in_target { continue; }
-            if let Some(rest) = t.strip_prefix("Active Port:") {
-                active_port = Some(rest.trim().to_string());
-            } else if let Some(rest) = t.strip_prefix("Mute:") {
-                source_muted = rest.trim() == "yes";
-            } else if t.starts_with("Volume:") {
-                if let Some(pct) = parse_first_percent(t) {
-                    source_volume_pct = Some(pct);
-                }
-            }
+        }
+
+        if let Some(v) = t.strip_prefix("Description:") {
+            dev.desc = v.trim().to_string();
+        } else if let Some(v) = t.strip_prefix("Mute:") {
+            dev.muted = v.trim() == "yes";
+        } else if t.starts_with("Volume:") && dev.volume_pct.is_none() {
+            dev.volume_pct = parse_first_percent(t);
+        } else if t == "Ports:" {
+            in_ports = true;
+        } else if let Some(v) = t.strip_prefix("Active Port:") {
+            dev.active_port = Some(v.trim().to_string());
         }
     }
+    if let Some(d) = cur.take() { devs.push(d); }
+    devs
+}
 
-    AudioStatus { active_port, source_volume_pct, source_muted, default_source }
+/// 포트 라인의 "설명 (type: ..., availability ...)" 부분 분리
+fn split_port_desc(rest: &str) -> (String, Option<bool>) {
+    let (desc, meta) = match rest.rfind("(type:") {
+        Some(i) => (rest[..i].trim().to_string(), &rest[i..]),
+        None => (rest.trim().to_string(), ""),
+    };
+    let available = if meta.contains("not available") {
+        Some(false)
+    } else if meta.contains("availability unknown") {
+        None
+    } else if meta.contains("available") {
+        Some(true)
+    } else {
+        None
+    };
+    (desc, available)
 }
 
 fn parse_first_percent(s: &str) -> Option<u32> {
