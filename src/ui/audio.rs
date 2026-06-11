@@ -31,6 +31,9 @@ pub struct AudioScan {
     pub sources: Vec<DeviceInfo>,
     pub default_sink: Option<String>,
     pub default_source: Option<String>,
+    /// ALSA 잭 감지 상태 (이름, 꽂힘 여부) — PipeWire 포트 availability가
+    /// "unknown"인 콤보잭에서도 물리 연결을 보여주기 위함
+    pub jacks: Vec<(String, bool)>,
 }
 
 /// pick_list 항목 — id는 pactl 이름, label은 표시용
@@ -80,9 +83,12 @@ pub struct AudioState {
     pub sources: Vec<DeviceInfo>,
     pub default_sink: Option<String>,
     pub default_source: Option<String>,
+    pub jacks: Vec<(String, bool)>,
     pub scanned: bool,
     pub sink_vol: u32,
     pub source_vol: u32,
+    sink_dragging: bool,
+    source_dragging: bool,
     pub running: Option<String>,
     pub last_test: MicTest,
 }
@@ -94,9 +100,12 @@ impl AudioState {
             sources: Vec::new(),
             default_sink: None,
             default_source: None,
+            jacks: Vec::new(),
             scanned: false,
             sink_vol: 0,
             source_vol: 0,
+            sink_dragging: false,
+            source_dragging: false,
             running: None,
             last_test: MicTest::None,
         }
@@ -123,9 +132,15 @@ impl AudioState {
                 self.sources = s.sources;
                 self.default_sink = s.default_sink;
                 self.default_source = s.default_source;
+                self.jacks = s.jacks;
                 self.scanned = true;
-                self.sink_vol = self.default_sink_dev().and_then(|d| d.volume_pct).unwrap_or(0);
-                self.source_vol = self.default_source_dev().and_then(|d| d.volume_pct).unwrap_or(0);
+                // 슬라이더 드래그 중에는 자동 새로고침이 값을 덮어쓰지 않도록
+                if !self.sink_dragging {
+                    self.sink_vol = self.default_sink_dev().and_then(|d| d.volume_pct).unwrap_or(0);
+                }
+                if !self.source_dragging {
+                    self.source_vol = self.default_source_dev().and_then(|d| d.volume_pct).unwrap_or(0);
+                }
                 (Task::none(), None)
             }
             AudioMsg::PickSink(c) => {
@@ -157,15 +172,17 @@ impl AudioState {
                 let script = format!("pactl set-source-port '{src}' '{}'", c.id);
                 (apply(script, format!("입력 포트 → {}", c.label)), None)
             }
-            AudioMsg::SinkVol(v) => { self.sink_vol = v; (Task::none(), None) }
-            AudioMsg::SourceVol(v) => { self.source_vol = v; (Task::none(), None) }
+            AudioMsg::SinkVol(v) => { self.sink_vol = v; self.sink_dragging = true; (Task::none(), None) }
+            AudioMsg::SourceVol(v) => { self.source_vol = v; self.source_dragging = true; (Task::none(), None) }
             AudioMsg::SinkVolCommit => {
+                self.sink_dragging = false;
                 let Some(sink) = self.default_sink.clone() else { return (Task::none(), None) };
                 let v = self.sink_vol;
                 let script = format!("pactl set-sink-volume '{sink}' {v}%");
                 (apply(script, format!("출력 볼륨 → {v}%")), None)
             }
             AudioMsg::SourceVolCommit => {
+                self.source_dragging = false;
                 let Some(src) = self.default_source.clone() else { return (Task::none(), None) };
                 let v = self.source_vol;
                 let script = format!("pactl set-source-volume '{src}' {v}%");
@@ -262,7 +279,19 @@ impl AudioState {
         ));
         col = col.push(Space::with_height(12));
 
+        // 잭 감지 카드 (ALSA 레벨 — PipeWire가 못 알려주는 물리 연결 상태)
+        col = col.push(jack_card(&self.jacks));
+        col = col.push(Space::with_height(12));
+
         // 입력 장치 카드
+        let mic_plugged = self.jacks.iter().any(|(n, on)| *on && n.contains("Mic"));
+        let active_input_port = self.default_source_dev().and_then(|d| d.active_port.as_deref());
+        let input_hint = if mic_plugged && active_input_port == Some("analog-input-internal-mic") {
+            "잭에 마이크가 감지되었습니다 — 지금은 노트북 내장 마이크로 녹음됩니다. \
+             포트를 '마이크'로 바꾸면 꽂은 핀마이크를 사용합니다."
+        } else {
+            "3.5mm 잭에 꽂은 핀마이크가 인식되지 않으면 포트를 '마이크' 또는 '헤드셋 마이크'로 바꿔보세요."
+        };
         col = col.push(device_card(
             "입력 (마이크)",
             &self.sources,
@@ -274,7 +303,7 @@ impl AudioState {
             AudioMsg::SourceVol,
             AudioMsg::SourceVolCommit,
             AudioMsg::ToggleSourceMute,
-            Some("3.5mm 잭에 꽂은 핀마이크가 인식되지 않으면 포트를 '마이크' 또는 '헤드셋 마이크'로 바꿔보세요."),
+            Some(input_hint),
         ));
         col = col.push(Space::with_height(14));
 
@@ -387,6 +416,44 @@ fn device_card<'a>(
     card(body)
 }
 
+fn jack_card(jacks: &[(String, bool)]) -> Element<'_, AudioMsg> {
+    let mut body = column![
+        text("3.5mm 잭 감지 (하드웨어)").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+        Space::with_height(8),
+    ];
+    if jacks.is_empty() {
+        body = body.push(text("잭 감지 정보 없음").size(12).color(C_DIM));
+    } else {
+        for (name, on) in jacks {
+            let (mark, state, scol) = if *on {
+                ("●", "꽂힘", C_OK)
+            } else {
+                ("○", "비어 있음", C_DIM)
+            };
+            body = body.push(
+                row![
+                    container(text(jack_label(name)).size(12)).width(180),
+                    text(format!("{mark} {state}")).size(12).color(scol),
+                ]
+                .align_y(iced::Alignment::Center)
+            );
+        }
+    }
+    card(body)
+}
+
+fn jack_label(name: &str) -> String {
+    match name {
+        "Headphone Mic Jack" => "콤보 잭 (헤드폰/마이크)".into(),
+        "Headphone Jack" => "헤드폰 잭".into(),
+        "Headset Mic Jack" => "헤드셋 마이크 잭".into(),
+        "Mic Jack" => "마이크 잭".into(),
+        "Line Out Jack" => "라인 출력 잭".into(),
+        "Line Jack" => "라인 입력 잭".into(),
+        _ => name.trim_end_matches(" Jack").to_string(),
+    }
+}
+
 fn device_choice(d: &DeviceInfo) -> Choice {
     let label = if d.desc.is_empty() { d.name.clone() } else { d.desc.clone() };
     Choice { id: d.name.clone(), label }
@@ -464,11 +531,12 @@ fn level_bar(peak_pct: f64) -> String {
 }
 
 async fn scan_audio() -> AudioScan {
-    let (sinks_r, sources_r, dsink_r, dsource_r) = tokio::join!(
+    let (sinks_r, sources_r, dsink_r, dsource_r, jacks_r) = tokio::join!(
         runner::run("pactl", &["list", "sinks"]),
         runner::run("pactl", &["list", "sources"]),
         runner::run("pactl", &["get-default-sink"]),
         runner::run("pactl", &["get-default-source"]),
+        runner::run_sh("for d in /proc/asound/card[0-9]*; do amixer -c \"${d##*card}\" contents 2>/dev/null; done"),
     );
 
     let sinks = parse_devices(&sinks_r.output);
@@ -488,7 +556,38 @@ async fn scan_audio() -> AudioScan {
         sources,
         default_sink: trim_name(&dsink_r),
         default_source: trim_name(&dsource_r),
+        jacks: parse_jacks(&jacks_r.output),
     }
+}
+
+/// `amixer contents`에서 iface=CARD 잭 감지 항목 추출.
+/// Phantom(항상 on, 감지 불가)과 HDMI는 제외 — 3.5mm 물리 잭만.
+fn parse_jacks(out: &str) -> Vec<(String, bool)> {
+    let mut jacks = Vec::new();
+    let mut cur: Option<String> = None;
+    for line in out.lines() {
+        let t = line.trim();
+        if t.starts_with("numid=") {
+            cur = None;
+            if !t.contains("iface=CARD") { continue; }
+            if let Some(i) = t.find("name='") {
+                let rest = &t[i + 6..];
+                if let Some(j) = rest.find('\'') {
+                    let name = &rest[..j];
+                    if name.ends_with("Jack") && !name.contains("Phantom") && !name.contains("HDMI") {
+                        cur = Some(name.to_string());
+                    }
+                }
+            }
+        } else if let Some(name) = cur.take() {
+            if let Some(v) = t.strip_prefix(": values=") {
+                jacks.push((name, v.trim() == "on"));
+            } else {
+                cur = Some(name); // "; type=BOOLEAN..." 줄은 건너뜀
+            }
+        }
+    }
+    jacks
 }
 
 /// `pactl list sinks|sources` 텍스트 출력 파싱.

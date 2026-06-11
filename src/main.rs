@@ -10,12 +10,13 @@ use ui::{
     apps::{AppsMsg, AppsState},
     audio::{AudioMsg, AudioState},
     cosmic_tweaks::{CosmicMsg, CosmicState},
+    disk::{DiskMsg, DiskState},
     ime::{ImeMsg, ImeState},
     usb::{UsbMsg, UsbState},
 };
 
 #[derive(Debug, Clone, PartialEq)]
-enum Tab { Ime, Usb, Audio, Cosmic, Apps }
+enum Tab { Ime, Usb, Audio, Disk, Cosmic, Apps }
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -23,6 +24,7 @@ enum Message {
     Ime(ImeMsg),
     Usb(UsbMsg),
     Audio(AudioMsg),
+    Disk(DiskMsg),
     Cosmic(CosmicMsg),
     Apps(AppsMsg),
     CopyLog,
@@ -34,6 +36,7 @@ struct App {
     ime: ImeState,
     usb: UsbState,
     audio: AudioState,
+    disk: DiskState,
     cosmic: CosmicState,
     apps: AppsState,
     output: String,
@@ -120,6 +123,7 @@ fn init() -> (App, Task<Message>) {
         ime: ImeState::new(),
         usb: UsbState::new(),
         audio: AudioState::new(),
+        disk: DiskState::new(),
         cosmic: CosmicState::new(),
         apps: AppsState::new(),
         output: String::new(),
@@ -128,16 +132,32 @@ fn init() -> (App, Task<Message>) {
         Task::perform(async { () }, |_| Message::Ime(ImeMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Usb(UsbMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Audio(AudioMsg::Refresh)),
+        Task::perform(async { () }, |_| Message::Disk(DiskMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Cosmic(CosmicMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Apps(AppsMsg::Refresh)),
     ]);
     (app, task)
 }
 
-fn subscription(_app: &App) -> Subscription<Message> {
+fn subscription(app: &App) -> Subscription<Message> {
     // 배포/빌드 중 실시간 출력 폴링
-    iced::time::every(std::time::Duration::from_millis(400))
-        .map(|_| Message::DrainStreamLog)
+    let drain = iced::time::every(std::time::Duration::from_millis(400))
+        .map(|_| Message::DrainStreamLog);
+
+    // 오디오/디스크 탭: 장치 상태 자동 새로고침 (꽂으면 바로 반영)
+    match app.tab {
+        Tab::Audio => {
+            let audio = iced::time::every(std::time::Duration::from_secs(2))
+                .map(|_| Message::Audio(AudioMsg::Refresh));
+            Subscription::batch([drain, audio])
+        }
+        Tab::Disk => {
+            let disk = iced::time::every(std::time::Duration::from_secs(2))
+                .map(|_| Message::Disk(DiskMsg::Refresh));
+            Subscription::batch([drain, disk])
+        }
+        _ => drain,
+    }
 }
 
 fn update(app: &mut App, msg: Message) -> Task<Message> {
@@ -157,6 +177,11 @@ fn update(app: &mut App, msg: Message) -> Task<Message> {
             let (task, res) = app.audio.update(m);
             if let Some(r) = res { push_log(&mut app.output, r); }
             task.map(Message::Audio)
+        }
+        Message::Disk(m) => {
+            let (task, res) = app.disk.update(m);
+            if let Some(r) = res { push_log(&mut app.output, r); }
+            task.map(Message::Disk)
         }
         Message::Cosmic(m) => {
             let (task, res) = app.cosmic.update(m);
@@ -203,6 +228,7 @@ fn view(app: &App) -> Element<'_, Message> {
         Tab::Ime    => app.ime.view().map(Message::Ime),
         Tab::Usb    => app.usb.view().map(Message::Usb),
         Tab::Audio  => app.audio.view().map(Message::Audio),
+        Tab::Disk   => app.disk.view().map(Message::Disk),
         Tab::Cosmic => app.cosmic.view().map(Message::Cosmic),
         Tab::Apps   => app.apps.view().map(Message::Apps),
     };
@@ -226,6 +252,7 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
         (Tab::Ime,    "IME",        "한글 입력기"),
         (Tab::Usb,    "USB",        "USB / 트랙볼"),
         (Tab::Audio,  "오디오",     "입출력 / 마이크"),
+        (Tab::Disk,   "디스크",     "외장하드 / 마운트"),
         (Tab::Cosmic, "COSMIC",     "COSMIC 트윅"),
         (Tab::Apps,   "앱 관리",    "설치 / 제거"),
     ];
