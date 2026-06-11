@@ -93,6 +93,8 @@ pub enum ImeMsg {
     Select(ImeKind),
     Install(ImeKind),
     Apply,
+    Watchdog,
+    Noop,
     CleanShellInits,
     PatchJetBrains,
     InstallResumeHook,
@@ -104,6 +106,8 @@ pub struct ImeState {
     pub status: Option<ImeStatus>,
     pub selected: ImeKind,
     pub running: Option<String>,
+    /// 시작 시 자동 재연결은 1회만 (매 스캔마다 데몬을 재시작하는 루프 방지)
+    auto_reconnected: bool,
 }
 
 impl ImeState {
@@ -112,6 +116,7 @@ impl ImeState {
             status: None,
             selected: ImeKind::Kime,
             running: None,
+            auto_reconnected: false,
         }
     }
 
@@ -125,16 +130,21 @@ impl ImeState {
                 if let Some(ref active) = s.active {
                     self.selected = active.clone();
                 }
-                // 시작 시 실행 중인 IME 데몬을 조용히 재연결 (Wayland 연결 복구)
-                let reconnect_task = if let Some(ref kind) = s.daemon_running {
-                    let k = kind.clone();
-                    Task::perform(
-                        async move {
-                            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-                            k
-                        },
-                        ImeMsg::AutoReconnect,
-                    )
+                // 시작 시 1회: 실행 중인 데몬은 재연결, 죽어 있으면 활성 IME를 자동 기동
+                let reconnect_task = if !self.auto_reconnected {
+                    let kind_opt = s.daemon_running.clone().or_else(|| s.active.clone());
+                    if let Some(k) = kind_opt {
+                        self.auto_reconnected = true;
+                        Task::perform(
+                            async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                                k
+                            },
+                            ImeMsg::AutoReconnect,
+                        )
+                    } else {
+                        Task::none()
+                    }
                 } else {
                     Task::none()
                 };
@@ -159,6 +169,26 @@ impl ImeState {
                 self.selected = k;
                 (Task::none(), None)
             }
+            // 30초 주기 워치독: 활성 IME 데몬이 죽어 있으면 자동 재기동
+            ImeMsg::Watchdog => {
+                let kind = self.status.as_ref()
+                    .and_then(|s| s.active.clone())
+                    .unwrap_or_else(|| self.selected.clone());
+                let bin: &'static str = match &kind {
+                    ImeKind::Kime => "kime",
+                    ImeKind::Ibus => "ibus-daemon",
+                    ImeKind::Fcitx5 => "fcitx5",
+                };
+                let t = Task::perform(
+                    async move {
+                        let alive = runner::run("pgrep", &["-x", bin]).await.success;
+                        (kind, alive)
+                    },
+                    |(k, alive)| if alive { ImeMsg::Noop } else { ImeMsg::AutoReconnect(k) },
+                );
+                (t, None)
+            }
+            ImeMsg::Noop => (Task::none(), None),
             ImeMsg::Install(k) => {
                 let pkgs = k.pkg().to_vec();
                 if pkgs.is_empty() {

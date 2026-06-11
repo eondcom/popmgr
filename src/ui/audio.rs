@@ -35,6 +35,43 @@ pub struct AudioScan {
     /// "unknown"인 콤보잭에서도 물리 연결을 보여주기 위함
     pub jacks: Vec<(String, bool)>,
     pub vref: Option<VrefInfo>,
+    /// 마이크 부스트 현재값: ("Headset Mic Boost", 2) 등 — amixer 0~3 (×10dB)
+    pub boosts: Vec<(String, u32)>,
+    /// 노이즈 억제(echo-cancel) 모듈 ID — Some이면 켜져 있음
+    pub denoise_module: Option<String>,
+}
+
+/// 고정된 입력 프로파일 — 잭 재연결/재부팅으로 설정이 리셋되면 자동 복원
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioLock {
+    pub source: String,
+    pub port: String,
+    pub volume_pct: u32,
+    pub boost_ctl: String,
+    pub boost_val: u32,
+}
+
+fn lock_path() -> std::path::PathBuf {
+    dirs::config_dir().unwrap_or_else(|| "/tmp".into()).join("popmgr/audio-lock.json")
+}
+
+fn load_lock() -> Option<AudioLock> {
+    serde_json::from_str(&std::fs::read_to_string(lock_path()).ok()?).ok()
+}
+
+fn save_lock(l: &AudioLock) -> std::io::Result<()> {
+    let p = lock_path();
+    if let Some(d) = p.parent() { let _ = std::fs::create_dir_all(d); }
+    std::fs::write(p, serde_json::to_string_pretty(l).unwrap_or_default())
+}
+
+pub fn port_label_kr(port: &str) -> &str {
+    match port {
+        "analog-input-internal-mic" => "내부 마이크",
+        "analog-input-headphone-mic" => "마이크 (잭)",
+        "analog-input-headset-mic" => "헤드셋 마이크",
+        _ => port,
+    }
 }
 
 /// 잭 마이크(핀마이크) 바이어스 전원 상태 — /proc/asound 코덱 덤프에서 파싱
@@ -47,6 +84,7 @@ pub struct VrefInfo {
     pub subsys_id: String,  // 0x1028087c
     pub codec_addr: u32,
     pub boot_patch: bool,   // 부팅 영구 패치 설치 여부
+    pub nopass: bool,       // 비번 없는 sudo 헬퍼 설치 여부 (자동 재적용 가능)
 }
 
 /// pick_list 항목 — id는 pactl 이름, label은 표시용
@@ -67,6 +105,8 @@ pub enum MicTest {
     None,
     Recording,
     Ok { peak_pct: f64, rms_pct: f64, samples: usize },
+    /// 스피커→마이크 루프 테스트 결과 (1kHz 톤 검출)
+    Loop { snr_db: f64, peak_pct: f64, rms_pct: f64 },
     Failed(String),
 }
 
@@ -86,10 +126,16 @@ pub enum AudioMsg {
     ToggleSourceMute,
     Applied(CmdResult),
     VrefOn,
+    VrefSetupNopass,
     VrefBootInstall,
     VrefBootRemove,
     PickTestTarget(Choice),
+    PickBoost(Choice),
+    ToggleDenoise,
+    LockProfile,
+    UnlockProfile,
     TestMic,
+    LoopTest,
     TestDone(MicTest),
     Play,
     Done(CmdResult),
@@ -102,6 +148,11 @@ pub struct AudioState {
     pub default_source: Option<String>,
     pub jacks: Vec<(String, bool)>,
     pub vref: Option<VrefInfo>,
+    pub boosts: Vec<(String, u32)>,
+    pub denoise_module: Option<String>,
+    pub lock: Option<AudioLock>,
+    enforcing: bool,
+    vref_fixing: bool,
     pub scanned: bool,
     pub sink_vol: u32,
     pub source_vol: u32,
@@ -123,6 +174,11 @@ impl AudioState {
             default_source: None,
             jacks: Vec::new(),
             vref: None,
+            boosts: Vec::new(),
+            denoise_module: None,
+            lock: load_lock(),
+            enforcing: false,
+            vref_fixing: false,
             scanned: false,
             sink_vol: 0,
             source_vol: 0,
@@ -143,6 +199,38 @@ impl AudioState {
     fn default_source_dev(&self) -> Option<&DeviceInfo> {
         let name = self.default_source.as_deref()?;
         self.sources.iter().find(|d| d.name == name)
+    }
+
+    /// 활성 입력 포트에 해당하는 마이크 부스트 선택 UI
+    fn boost_row(&self) -> Option<Element<'_, AudioMsg>> {
+        let dev = self.default_source_dev()?;
+        let ctl = match dev.active_port.as_deref()? {
+            "analog-input-internal-mic" => "Internal Mic Boost",
+            "analog-input-headphone-mic" => "Headphone Mic Boost",
+            "analog-input-headset-mic" => "Headset Mic Boost",
+            _ => return None,
+        };
+        let cur = self.boosts.iter().find(|(n, _)| n == ctl).map(|(_, v)| *v)?;
+        let opts: Vec<Choice> = (0..=3u32).map(|v| Choice {
+            id: format!("{ctl}\t{v}"),
+            label: if v == 0 { "0 dB (부스트 끔)".to_string() } else { format!("+{} dB", v * 10) },
+        }).collect();
+        let selected = opts.iter().find(|c| c.id == format!("{ctl}\t{cur}")).cloned();
+        Some(card(
+            column![
+                text("마이크 부스트 (아날로그 게인)").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+                Space::with_height(6),
+                row![
+                    container(text("부스트").size(12).color(C_DIM)).width(50),
+                    pick_list(opts, selected, AudioMsg::PickBoost)
+                        .text_size(12)
+                        .width(Length::Fill),
+                ].align_y(iced::Alignment::Center),
+                Space::with_height(4),
+                text("녹음이 깨지거나 너무 크면 낮추고, 너무 작으면 한 단계씩 올리세요. (볼륨 슬라이더를 움직이면 부스트가 자동 재조정될 수 있음)")
+                    .size(11).color(C_DIM),
+            ]
+        ))
     }
 
     /// 테스트 녹음 대상 후보: 모든 입력 장치 × 포트 조합
@@ -167,12 +255,19 @@ impl AudioState {
                 (t, None)
             }
             AudioMsg::Refreshed(s) => {
-                self.sinks = s.sinks;
-                self.sources = s.sources;
+                // 일시적 스캔 실패로 빈 목록이 오면 이전 목록 유지 ("장치 없음" 깜빡임 방지)
+                if !s.sinks.is_empty() || self.sinks.is_empty() {
+                    self.sinks = s.sinks;
+                }
+                if !s.sources.is_empty() || self.sources.is_empty() {
+                    self.sources = s.sources;
+                }
                 self.default_sink = s.default_sink;
                 self.default_source = s.default_source;
                 self.jacks = s.jacks;
                 self.vref = s.vref;
+                self.boosts = s.boosts;
+                self.denoise_module = s.denoise_module;
                 self.scanned = true;
                 // 슬라이더 드래그 중에는 자동 새로고침이 값을 덮어쓰지 않도록
                 if !self.sink_dragging {
@@ -192,6 +287,62 @@ impl AudioState {
                                 .and_then(|ap| d.ports.iter().find(|p| p.name == ap));
                             test_choice(d, port)
                         });
+                    }
+                }
+
+                // 고정 프로파일 자동 복원: 잭 마이크가 꽂혀 있는데
+                // 시스템이 포트를 내부 마이크로 되돌려놨으면 고정 설정 재적용
+                if let Some(lock) = self.lock.clone() {
+                    let plugged = self.jacks.iter().any(|(n, on)| *on && n.contains("Mic"));
+                    let active = self.default_source_dev().and_then(|d| d.active_port.clone());
+                    let reset_detected = lock.port != "analog-input-internal-mic"
+                        && active.as_deref() == Some("analog-input-internal-mic");
+                    if plugged && reset_detected && !self.enforcing && self.running.is_none() {
+                        self.enforcing = true;
+                        let move_streams = if self.denoise_module.is_some() {
+                            String::new() // 노이즈 억제 중엔 denoise 소스가 기본 — 건드리지 않음
+                        } else {
+                            format!(
+                                "pactl set-default-source '{src}'; \
+                                 pactl list short source-outputs | cut -f1 | while read -r i; do \
+                                   pactl move-source-output \"$i\" '{src}' 2>/dev/null || true; done; ",
+                                src = lock.source
+                            )
+                        };
+                        let boost_cmd = if lock.boost_ctl.is_empty() { String::new() } else {
+                            format!("amixer -c0 sset '{}' {} >/dev/null; ", lock.boost_ctl, lock.boost_val)
+                        };
+                        let script = format!(
+                            "pactl set-source-port '{src}' '{port}' && \
+                             pactl set-source-volume '{src}' {vol}%; {boost_cmd}{move_streams}\
+                             echo '잭 재연결 감지 — 고정된 입력 설정 자동 복원 ({label}, {vol}%, 부스트 +{bdb}dB)'",
+                            src = lock.source, port = lock.port, vol = lock.volume_pct,
+                            label = port_label_kr(&lock.port), bdb = lock.boost_val * 10,
+                        );
+                        return (apply(script, "고정 설정 복원됨".into()), None);
+                    }
+                    if !reset_detected {
+                        self.enforcing = false;
+                    }
+                }
+
+                // 핀마이크 전원 자동 재적용: 비번 없는 헬퍼가 설치되어 있고
+                // '마이크(잭)' 포트인데 바이어스가 꺼져 있으면 조용히 다시 켬
+                if let Some(v) = &self.vref {
+                    let active = self.default_source_dev().and_then(|d| d.active_port.as_deref());
+                    if v.nopass && !v.bias_on
+                        && active == Some("analog-input-headphone-mic")
+                        && !self.vref_fixing && self.running.is_none()
+                    {
+                        self.vref_fixing = true;
+                        let script = format!(
+                            "sudo -n /usr/local/bin/popmgr-helper --apply-vref '{}' 0x{:x} 0x24 2>&1",
+                            v.hwdev, v.nid
+                        );
+                        return (apply(script, "핀마이크 전원 자동 복원됨".into()), None);
+                    }
+                    if v.bias_on {
+                        self.vref_fixing = false;
                     }
                 }
                 (Task::none(), None)
@@ -260,12 +411,34 @@ impl AudioState {
                 let exe = std::env::current_exe()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| "popmgr".into());
-                self.running = Some("핀마이크 전원 켜는 중 (관리자 인증 필요)...".into());
+                self.running = Some(if v.nopass {
+                    "핀마이크 전원 켜는 중...".into()
+                } else {
+                    "핀마이크 전원 켜는 중 (관리자 인증 필요)...".into()
+                });
+                // 비번 없는 헬퍼가 있으면 먼저 시도, 없으면 pkexec
                 let script = format!(
-                    "pkexec '{exe}' --apply-vref '{}' 0x{:x} 0x24 2>&1",
-                    v.hwdev, v.nid
+                    "sudo -n /usr/local/bin/popmgr-helper --apply-vref '{dev}' 0x{nid:x} 0x24 2>/dev/null \
+                     || pkexec '{exe}' --apply-vref '{dev}' 0x{nid:x} 0x24 2>&1",
+                    dev = v.hwdev, nid = v.nid
                 );
                 (apply(script, "핀마이크 바이어스 전원 켜짐 (VREF_80)".into()), None)
+            }
+            AudioMsg::VrefSetupNopass => {
+                let Some(_v) = self.vref.clone() else { return (Task::none(), None) };
+                let exe = std::env::current_exe()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "popmgr".into());
+                let user = std::env::var("USER").unwrap_or_else(|_| "dell".into());
+                self.running = Some("비번 없는 전원 제어 설정 중 (이번 한 번만 인증)...".into());
+                // 루트 소유 사본 + 해당 명령만 NOPASSWD 허용 (사용자 쓰기 가능한 원본을 sudoers에 넣지 않음)
+                let script = format!(
+                    "pkexec bash -c \"install -m 0755 -o root -g root '{exe}' /usr/local/bin/popmgr-helper && \
+                     printf '{user} ALL=(root) NOPASSWD: /usr/local/bin/popmgr-helper --apply-vref *\\n' > /etc/sudoers.d/popmgr-vref && \
+                     chmod 0440 /etc/sudoers.d/popmgr-vref && \
+                     echo '비번 없는 전원 제어 설정 완료 — 이제 자동으로 켜집니다.'\" 2>&1"
+                );
+                (apply(script, "비번 없는 전원 제어 설정됨".into()), None)
             }
             AudioMsg::VrefBootInstall => {
                 let Some(v) = self.vref.clone() else { return (Task::none(), None) };
@@ -296,6 +469,83 @@ impl AudioState {
                 self.test_target = Some(c);
                 (Task::none(), None)
             }
+            AudioMsg::PickBoost(c) => {
+                let Some((ctl, val)) = c.id.split_once('\t') else { return (Task::none(), None) };
+                let script = format!("amixer -c0 sset '{ctl}' {val} >/dev/null && echo '{} → {}'", ctl, c.label);
+                (apply(script, format!("{ctl} → {}", c.label)), None)
+            }
+            AudioMsg::LoopTest => {
+                let target = self.test_target.as_ref().map(|c| {
+                    let (s, p) = c.id.split_once('\t').unwrap_or((c.id.as_str(), ""));
+                    (s.to_string(), p.to_string())
+                });
+                let sink = self.default_sink.clone();
+                self.last_test_label = self.test_target.as_ref()
+                    .map(|c| c.label.clone()).unwrap_or_else(|| "기본 입력".into());
+                self.running = Some(format!("루프 테스트 중 (4초, 비프음 재생)... [{}]", self.last_test_label));
+                self.last_test = MicTest::Recording;
+                let t = Task::perform(async move { loop_test(sink, target).await }, AudioMsg::TestDone);
+                (t, None)
+            }
+            AudioMsg::LockProfile => {
+                let Some(dev) = self.default_source_dev() else {
+                    return (Task::none(), Some(CmdResult { success: false, output: "입력 장치 없음".into() }));
+                };
+                let Some(port) = dev.active_port.clone() else {
+                    return (Task::none(), Some(CmdResult { success: false, output: "활성 포트 없음".into() }));
+                };
+                let boost_ctl = match port.as_str() {
+                    "analog-input-internal-mic" => "Internal Mic Boost",
+                    "analog-input-headphone-mic" => "Headphone Mic Boost",
+                    "analog-input-headset-mic" => "Headset Mic Boost",
+                    _ => "",
+                }.to_string();
+                let boost_val = self.boosts.iter()
+                    .find(|(n, _)| *n == boost_ctl).map(|(_, v)| *v).unwrap_or(0);
+                let lock = AudioLock {
+                    source: dev.name.clone(),
+                    port: port.clone(),
+                    volume_pct: self.source_vol,
+                    boost_ctl,
+                    boost_val,
+                };
+                let res = match save_lock(&lock) {
+                    Ok(()) => CmdResult {
+                        success: true,
+                        output: format!(
+                            "입력 설정 고정됨: {} / 볼륨 {}% / 부스트 +{}dB — 잭을 다시 꽂으면 자동 복원됩니다.",
+                            port_label_kr(&lock.port), lock.volume_pct, lock.boost_val * 10
+                        ),
+                    },
+                    Err(e) => CmdResult { success: false, output: format!("고정 저장 실패: {e}") },
+                };
+                self.lock = Some(lock);
+                (Task::none(), Some(res))
+            }
+            AudioMsg::UnlockProfile => {
+                let _ = std::fs::remove_file(lock_path());
+                self.lock = None;
+                (Task::none(), Some(CmdResult { success: true, output: "입력 설정 고정 해제됨".into() }))
+            }
+            AudioMsg::ToggleDenoise => {
+                self.running = Some("노이즈 억제 전환 중...".into());
+                let script = if let Some(id) = &self.denoise_module {
+                    format!(
+                        "pactl unload-module {id}; sleep 0.3; \
+                         HW=$(pactl list short sources | awk -F'\\t' '$2 !~ /\\.monitor|popmgr_denoise/ {{print $2; exit}}'); \
+                         if [ -n \"$HW\" ]; then pactl set-default-source \"$HW\"; \
+                           pactl list short source-outputs | cut -f1 | while read -r i; do pactl move-source-output \"$i\" \"$HW\" 2>/dev/null || true; done; fi; \
+                         echo '노이즈 억제 꺼짐 — 원본 마이크로 복귀'"
+                    )
+                } else {
+                    "pactl load-module module-echo-cancel \
+                     'source_name=popmgr_denoise aec_method=webrtc aec_args=\"analog_gain_control=0 digital_gain_control=1 noise_suppression=1\"' >/dev/null && \
+                     sleep 0.3 && pactl set-default-source popmgr_denoise && \
+                     pactl list short source-outputs | cut -f1 | while read -r i; do pactl move-source-output \"$i\" popmgr_denoise 2>/dev/null || true; done; \
+                     echo '노이즈 억제 켜짐 — OBS 등 모든 앱이 잡음 제거된 마이크를 사용합니다'".to_string()
+                };
+                (apply(script, "노이즈 억제 전환됨".into()), None)
+            }
             AudioMsg::TestMic => {
                 let target = self.test_target.as_ref().map(|c| {
                     let (s, p) = c.id.split_once('\t').unwrap_or((c.id.as_str(), ""));
@@ -317,6 +567,13 @@ impl AudioState {
                         output: format!(
                             "마이크 테스트 [{}]: peak {:.1}%, RMS {:.2}%, 샘플 {}",
                             self.last_test_label, peak_pct, rms_pct, samples
+                        ),
+                    },
+                    MicTest::Loop { snr_db, peak_pct, rms_pct } => CmdResult {
+                        success: *snr_db > 15.0,
+                        output: format!(
+                            "루프 테스트 [{}]: 톤 SNR {:.1}dB, peak {:.1}%, RMS {:.2}%",
+                            self.last_test_label, snr_db, peak_pct, rms_pct
                         ),
                     },
                     MicTest::Failed(e) => CmdResult { success: false, output: format!("마이크 테스트 실패: {e}") },
@@ -378,20 +635,24 @@ impl AudioState {
         col = col.push(jack_card(&self.jacks));
         col = col.push(Space::with_height(12));
 
-        // 핀마이크 전원(바이어스) 카드 — 꺼져 있으면 잭 마이크가 무전원이라 지지직만 녹음됨
+        let mic_plugged = self.jacks.iter().any(|(n, on)| *on && n.contains("Mic"));
+        let active_input_port = self.default_source_dev().and_then(|d| d.active_port.as_deref());
+
+        // 핀마이크 전원(바이어스) 카드 — '마이크'(headphone-mic) 포트를 쓸 때만 의미 있음
         if let Some(v) = &self.vref {
-            col = col.push(vref_card(v, is_running));
-            col = col.push(Space::with_height(12));
+            if active_input_port == Some("analog-input-headphone-mic") {
+                col = col.push(vref_card(v, is_running));
+                col = col.push(Space::with_height(12));
+            }
         }
 
         // 입력 장치 카드
-        let mic_plugged = self.jacks.iter().any(|(n, on)| *on && n.contains("Mic"));
-        let active_input_port = self.default_source_dev().and_then(|d| d.active_port.as_deref());
         let input_hint = if mic_plugged && active_input_port == Some("analog-input-internal-mic") {
             "잭에 마이크가 감지되었습니다 — 지금은 노트북 내장 마이크로 녹음됩니다. \
-             포트를 '마이크'로 바꾸면 꽂은 핀마이크를 사용합니다."
+             포트를 '헤드셋 마이크'(4극 플러그) 또는 '마이크'(3극 플러그)로 바꾸면 핀마이크를 사용합니다."
         } else {
-            "3.5mm 잭에 꽂은 핀마이크가 인식되지 않으면 포트를 '마이크' 또는 '헤드셋 마이크'로 바꿔보세요."
+            "핀마이크가 지지직거리거나 안 잡히면: 4극(TRRS) 플러그는 '헤드셋 마이크', \
+             3극(TRS)은 '마이크' 포트 + 아래 핀마이크 전원을 켜세요."
         };
         col = col.push(device_card(
             "입력 (마이크)",
@@ -406,6 +667,22 @@ impl AudioState {
             AudioMsg::ToggleSourceMute,
             Some(input_hint),
         ));
+        col = col.push(Space::with_height(8));
+
+        // 마이크 부스트 (아날로그 게인 — 녹음이 너무 크거나 작을 때 조절)
+        if let Some(boost_row) = self.boost_row() {
+            col = col.push(boost_row);
+            col = col.push(Space::with_height(8));
+        } else {
+            col = col.push(Space::with_height(2));
+        }
+
+        // 노이즈 억제 (WebRTC noise suppression)
+        col = col.push(denoise_card(self.denoise_module.is_some(), is_running));
+        col = col.push(Space::with_height(8));
+
+        // 입력 설정 고정 (잭 재연결 시 자동 복원)
+        col = col.push(lock_card(self.lock.as_ref(), is_running));
         col = col.push(Space::with_height(14));
 
         // 테스트 대상 선택 (어느 입력으로 녹음할지)
@@ -429,10 +706,12 @@ impl AudioState {
         col = col.push(Space::with_height(16));
 
         // 액션 버튼
-        let has_recording = matches!(self.last_test, MicTest::Ok { .. });
+        let has_recording = matches!(self.last_test, MicTest::Ok { .. } | MicTest::Loop { .. });
         let mut actions = row![
             Space::with_width(Length::Fill),
             action_btn("새로고침", AudioMsg::Refresh, !is_running, Color::from_rgb(0.3, 0.3, 0.4)),
+            Space::with_width(8),
+            action_btn("루프 테스트 (비프음)", AudioMsg::LoopTest, !is_running, Color::from_rgb(0.45, 0.3, 0.6)),
             Space::with_width(8),
             action_btn("마이크 테스트 (2초)", AudioMsg::TestMic, !is_running, C_BLUE),
         ].align_y(iced::Alignment::Center);
@@ -532,6 +811,73 @@ fn device_card<'a>(
     card(body)
 }
 
+fn lock_card<'a>(lock: Option<&'a AudioLock>, is_busy: bool) -> Element<'a, AudioMsg> {
+    let mut body = column![
+        text("입력 설정 고정 (잭 재연결 시 자동 복원)").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+        Space::with_height(6),
+    ];
+    match lock {
+        Some(l) => {
+            body = body.push(
+                row![
+                    container(
+                        text(format!(
+                            "● 고정됨: {} / 볼륨 {}% / 부스트 +{}dB",
+                            port_label_kr(&l.port), l.volume_pct, l.boost_val * 10
+                        )).size(12).color(C_OK)
+                    ).width(Length::Fill),
+                    action_btn("고정 해제", AudioMsg::UnlockProfile, !is_busy, Color::from_rgb(0.5, 0.3, 0.2)),
+                ].align_y(iced::Alignment::Center)
+            );
+            body = body.push(Space::with_height(4));
+            body = body.push(
+                text("잭을 뺐다 꽂거나 시스템이 설정을 되돌려도 popmgr가 2초 안에 자동 복원합니다.")
+                    .size(11).color(C_DIM)
+            );
+        }
+        None => {
+            body = body.push(
+                row![
+                    container(
+                        text("○ 고정 안 됨 — 잭을 다시 꽂으면 시스템이 내부 마이크로 되돌립니다")
+                            .size(12).color(C_DIM)
+                    ).width(Length::Fill),
+                    action_btn("현재 설정 고정", AudioMsg::LockProfile, !is_busy, C_BLUE),
+                ].align_y(iced::Alignment::Center)
+            );
+            body = body.push(Space::with_height(4));
+            body = body.push(
+                text("핀마이크가 잘 되는 상태에서 누르세요. 포트/볼륨/부스트가 저장됩니다.")
+                    .size(11).color(C_DIM)
+            );
+        }
+    }
+    card(body)
+}
+
+fn denoise_card<'a>(on: bool, is_busy: bool) -> Element<'a, AudioMsg> {
+    let (mark, state, scol) = if on {
+        ("●", "켜짐 — 모든 앱이 잡음 제거된 마이크(popmgr_denoise)를 사용 중", C_OK)
+    } else {
+        ("○", "꺼짐 — 노트북 바닥 잡음이 그대로 녹음됩니다", C_DIM)
+    };
+    let btn_label = if on { "끄기" } else { "켜기" };
+    let btn_color = if on { Color::from_rgb(0.5, 0.3, 0.2) } else { C_GREEN };
+    card(
+        column![
+            text("노이즈 억제 (주변/바닥 잡음 제거)").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+            Space::with_height(6),
+            row![
+                container(text(format!("{mark} {state}")).size(12).color(scol)).width(Length::Fill),
+                action_btn(btn_label, AudioMsg::ToggleDenoise, !is_busy, btn_color),
+            ].align_y(iced::Alignment::Center),
+            Space::with_height(4),
+            text("WebRTC 잡음 억제 필터를 마이크 앞단에 끼웁니다. 녹음/방송 앱(OBS 등)은 자동으로 이 필터를 거칩니다.")
+                .size(11).color(C_DIM),
+        ]
+    )
+}
+
 fn vref_card(v: &VrefInfo, is_busy: bool) -> Element<'_, AudioMsg> {
     let (mark, state, scol) = if v.bias_on {
         ("●", "켜짐 (VREF_80) — 핀마이크에 전원 공급 중", C_OK)
@@ -551,9 +897,21 @@ fn vref_card(v: &VrefInfo, is_busy: bool) -> Element<'_, AudioMsg> {
         Space::with_height(8),
     ];
 
+    if v.nopass {
+        body = body.push(
+            text("비번 없는 자동 제어 활성 — 꺼지면 popmgr가 자동으로 다시 켭니다.")
+                .size(11).color(C_OK)
+        );
+        body = body.push(Space::with_height(6));
+    }
+
     let mut actions = row![Space::with_width(Length::Fill)].align_y(iced::Alignment::Center);
     if !v.bias_on {
         actions = actions.push(action_btn("지금 켜기", AudioMsg::VrefOn, !is_busy, C_BLUE));
+        actions = actions.push(Space::with_width(8));
+    }
+    if !v.nopass {
+        actions = actions.push(action_btn("비번 없이 자동제어 설정", AudioMsg::VrefSetupNopass, !is_busy, Color::from_rgb(0.45, 0.3, 0.6)));
         actions = actions.push(Space::with_width(8));
     }
     if v.boot_patch {
@@ -670,6 +1028,28 @@ fn test_result_card<'a>(test: &'a MicTest, label: &'a str) -> Element<'a, AudioM
                 text(e).size(11).color(C_DIM),
             ]
         ),
+        MicTest::Loop { snr_db, peak_pct, rms_pct } => {
+            let (verdict, vcol) = if *snr_db > 15.0 {
+                ("정상 — 이 입력이 스피커 소리를 또렷하게 녹음함", C_OK)
+            } else if *snr_db > 5.0 {
+                ("약함 — 톤이 희미하게 잡힘 (부스트/볼륨/마이크 위치 확인)", C_WARN)
+            } else {
+                ("실패 — 톤이 안 잡힘, 노이즈만 녹음됨 (포트가 맞는지 확인)", C_ERR)
+            };
+            let clip = if *peak_pct >= 99.0 { "   ※ 클리핑 — 부스트/볼륨을 낮추세요" } else { "" };
+            card(
+                column![
+                    target_line,
+                    row![
+                        text("루프 테스트: ").size(13),
+                        text(verdict).size(13).color(vcol),
+                    ],
+                    Space::with_height(8),
+                    text(format!("톤 SNR: {snr_db:.1} dB   Peak: {peak_pct:.1}%   RMS: {rms_pct:.2}%{clip}"))
+                        .size(11).color(if *peak_pct >= 99.0 { C_WARN } else { C_DIM }),
+                ]
+            )
+        }
         MicTest::Ok { peak_pct, rms_pct, samples } => {
             let (verdict, vcol) = if *peak_pct < 1.0 {
                 ("무음 — 마이크 입력이 거의 없음 (mute/볼륨/잭 확인)", C_ERR)
@@ -704,12 +1084,13 @@ fn level_bar(peak_pct: f64) -> String {
 }
 
 async fn scan_audio() -> AudioScan {
-    let (sinks_r, sources_r, dsink_r, dsource_r, jacks_r) = tokio::join!(
+    let (sinks_r, sources_r, dsink_r, dsource_r, jacks_r, modules_r) = tokio::join!(
         runner::run("pactl", &["list", "sinks"]),
         runner::run("pactl", &["list", "sources"]),
         runner::run("pactl", &["get-default-sink"]),
         runner::run("pactl", &["get-default-source"]),
         runner::run_sh("for d in /proc/asound/card[0-9]*; do amixer -c \"${d##*card}\" contents 2>/dev/null; done"),
+        runner::run("pactl", &["list", "short", "modules"]),
     );
 
     let sinks = parse_devices(&sinks_r.output);
@@ -731,7 +1112,42 @@ async fn scan_audio() -> AudioScan {
         default_source: trim_name(&dsource_r),
         jacks: parse_jacks(&jacks_r.output),
         vref: scan_vref(),
+        boosts: parse_boosts(&jacks_r.output),
+        denoise_module: modules_r.output.lines()
+            .find(|l| l.contains("module-echo-cancel"))
+            .and_then(|l| l.split_whitespace().next())
+            .map(|s| s.to_string()),
     }
+}
+
+/// `amixer contents`에서 '... Mic Boost Volume' 현재값 추출
+fn parse_boosts(out: &str) -> Vec<(String, u32)> {
+    let mut res = Vec::new();
+    let mut cur: Option<String> = None;
+    for line in out.lines() {
+        let t = line.trim();
+        if t.starts_with("numid=") {
+            cur = None;
+            if let Some(i) = t.find("name='") {
+                let rest = &t[i + 6..];
+                if let Some(j) = rest.find('\'') {
+                    let name = &rest[..j];
+                    if name.ends_with("Mic Boost Volume") {
+                        cur = Some(name.trim_end_matches(" Volume").to_string());
+                    }
+                }
+            }
+        } else if let Some(name) = cur.take() {
+            if let Some(v) = t.strip_prefix(": values=") {
+                if let Some(first) = v.split(',').next().and_then(|x| x.trim().parse::<u32>().ok()) {
+                    res.push((name, first));
+                }
+            } else {
+                cur = Some(name); // "; type=..." 줄 건너뜀
+            }
+        }
+    }
+    res
 }
 
 /// /proc/asound/cardN/codec#M에서 Headphone Mic 핀의 바이어스(VREF) 상태 파싱.
@@ -782,6 +1198,7 @@ fn scan_vref() -> Option<VrefInfo> {
                 subsys_id,
                 codec_addr,
                 boot_patch: std::path::Path::new("/etc/modprobe.d/popmgr-pinmic.conf").exists(),
+                nopass: std::path::Path::new("/etc/sudoers.d/popmgr-vref").exists(),
             });
         }
     }
@@ -904,6 +1321,115 @@ fn parse_first_percent(s: &str) -> Option<u32> {
         idx = abs + 1;
     }
     None
+}
+
+const TONE_WAV: &str = "/tmp/popmgr-tone.wav";
+
+/// 1kHz 0.5초 on/off 버스트 4초 톤 생성 (루프 테스트용)
+fn write_tone_wav() -> std::io::Result<()> {
+    let sr = 48000u32;
+    let n = sr * 4;
+    let mut pcm = Vec::with_capacity((n * 2) as usize);
+    for i in 0..n {
+        let t = i as f64 / sr as f64;
+        let on = (t * 2.0) as u32 % 2 == 0;
+        let v = if on {
+            (0.5 * 32767.0 * (2.0 * std::f64::consts::PI * 1000.0 * t).sin()) as i16
+        } else {
+            0
+        };
+        pcm.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut w = Vec::with_capacity(44 + pcm.len());
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + pcm.len() as u32).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes());      // PCM
+    w.extend_from_slice(&1u16.to_le_bytes());      // mono
+    w.extend_from_slice(&sr.to_le_bytes());
+    w.extend_from_slice(&(sr * 2).to_le_bytes());
+    w.extend_from_slice(&2u16.to_le_bytes());
+    w.extend_from_slice(&16u16.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
+    w.extend_from_slice(&pcm);
+    std::fs::write(TONE_WAV, w)
+}
+
+fn goertzel(x: &[f64], f: f64, sr: f64) -> f64 {
+    let w = 2.0 * std::f64::consts::PI * f / sr;
+    let c = 2.0 * w.cos();
+    let (mut s1, mut s2) = (0.0f64, 0.0f64);
+    for &q in x {
+        let s0 = q + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    s1 * s1 + s2 * s2 - c * s1 * s2
+}
+
+/// 스피커로 톤 재생 + 선택 입력으로 동시 녹음 → 1kHz 검출로 입력 경로 검증
+async fn loop_test(sink: Option<String>, target: Option<(String, String)>) -> MicTest {
+    if let Err(e) = write_tone_wav() {
+        return MicTest::Failed(format!("톤 생성 실패: {e}"));
+    }
+    let _ = std::fs::remove_file(TEST_WAV);
+
+    let mut src_env = String::new();
+    if let Some((s, p)) = &target {
+        if !p.is_empty() {
+            let pr = runner::run("pactl", &["set-source-port", s, p]).await;
+            if !pr.success {
+                return MicTest::Failed(format!("포트 전환 실패: {}", pr.output.trim()));
+            }
+        }
+        src_env = format!("PULSE_SOURCE='{s}' ");
+    }
+    let sink_env = sink.map(|s| format!("PULSE_SINK='{s}' ")).unwrap_or_default();
+    let script = format!(
+        "{sink_env}paplay {TONE_WAV} & \
+         {src_env}arecord -D pulse -f S16_LE -r 48000 -c 1 -d 4 {TEST_WAV}; wait"
+    );
+    let r = runner::run_sh(&script).await;
+    if !r.success {
+        return MicTest::Failed(r.output.trim().to_string());
+    }
+
+    let bytes = match tokio::fs::read(TEST_WAV).await {
+        Ok(b) => b,
+        Err(e) => return MicTest::Failed(format!("파일 읽기 실패: {e}")),
+    };
+    if bytes.len() <= 44 {
+        return MicTest::Failed("녹음 파일이 비어있음".into());
+    }
+    let samples: Vec<f64> = bytes[44..]
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f64)
+        .collect();
+    let n = samples.len();
+    let sr = 48000.0;
+    let win = 12000; // 0.25초
+    let mut powers: Vec<f64> = samples
+        .chunks(win)
+        .filter(|c| c.len() == win)
+        .map(|c| goertzel(c, 1000.0, sr) / win as f64)
+        .collect();
+    if powers.len() < 8 || n < 48000 {
+        return MicTest::Failed("녹음이 너무 짧음".into());
+    }
+    powers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let k = powers.len();
+    let hi: f64 = powers[k - 4..].iter().sum::<f64>() / 4.0;
+    let lo: f64 = powers[..4].iter().sum::<f64>() / 4.0 + 1.0;
+    let snr_db = 10.0 * (hi / lo).log10();
+    let peak = samples.iter().fold(0f64, |m, &v| m.max(v.abs()));
+    let rms = (samples.iter().map(|v| v * v).sum::<f64>() / n as f64).sqrt();
+    MicTest::Loop {
+        snr_db,
+        peak_pct: peak / 32768.0 * 100.0,
+        rms_pct: rms / 32768.0 * 100.0,
+    }
 }
 
 async fn test_mic(target: Option<(String, String)>) -> MicTest {

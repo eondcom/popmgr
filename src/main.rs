@@ -199,19 +199,28 @@ fn subscription(app: &App) -> Subscription<Message> {
     let drain = iced::time::every(std::time::Duration::from_millis(400))
         .map(|_| Message::DrainStreamLog);
 
+    // IME 워치독: popmgr가 떠 있는 동안 한글 입력기 데몬이 죽으면 자동 재기동
+    let ime_watch = iced::time::every(std::time::Duration::from_secs(30))
+        .map(|_| Message::Ime(ImeMsg::Watchdog));
+
     // 오디오/디스크 탭: 장치 상태 자동 새로고침 (꽂으면 바로 반영)
     match app.tab {
         Tab::Audio => {
             let audio = iced::time::every(std::time::Duration::from_secs(2))
                 .map(|_| Message::Audio(AudioMsg::Refresh));
-            Subscription::batch([drain, audio])
+            Subscription::batch([drain, ime_watch, audio])
         }
         Tab::Disk => {
             let disk = iced::time::every(std::time::Duration::from_secs(2))
                 .map(|_| Message::Disk(DiskMsg::Refresh));
-            Subscription::batch([drain, disk])
+            Subscription::batch([drain, ime_watch, disk])
         }
-        _ => drain,
+        // 다른 탭에서도 느린 주기로 오디오 감시 — 고정 설정 자동 복원이 항상 동작하도록
+        _ => {
+            let audio_slow = iced::time::every(std::time::Duration::from_secs(5))
+                .map(|_| Message::Audio(AudioMsg::Refresh));
+            Subscription::batch([drain, ime_watch, audio_slow])
+        }
     }
 }
 
