@@ -166,17 +166,38 @@ fn patch_card(
 }
 
 async fn scan_cosmic() -> CosmicStatus {
-    let markers = load_markers();
-
     let files_ver = runner::run("bash", &["-c", "dpkg -l cosmic-files 2>/dev/null | grep '^ii' | awk '{print $3}'"]).await;
     let comp_ver  = runner::run("bash", &["-c", "dpkg -l cosmic-comp 2>/dev/null | grep '^ii' | awk '{print $3}'"]).await;
 
+    // 마커 파일이 아니라 실제 바이너리 상태로 판단한다.
+    // 시스템 업그레이드가 패치를 덮어쓰면 마커는 그대로라 "적용됨"으로 거짓 표시되던 버그를 차단.
+    let copy_path_patched   = binary_patched("cosmic-files", "/usr/bin/cosmic-files").await;
+    let three_finger_patched = binary_patched("cosmic-comp",  "/usr/bin/cosmic-comp").await;
+
+    // 실제 상태로 마커 동기화 (apply/remove 경로의 기록과 어긋나지 않도록)
+    let mut m = load_markers();
+    if m.copy_path != copy_path_patched || m.three_finger != three_finger_patched {
+        m.copy_path = copy_path_patched;
+        m.three_finger = three_finger_patched;
+        save_markers(&m);
+    }
+
     CosmicStatus {
-        copy_path_patched:   markers.copy_path,
-        three_finger_patched: markers.three_finger,
+        copy_path_patched,
+        three_finger_patched,
         cosmic_files_ver: files_ver.output.trim().to_string(),
         cosmic_comp_ver:  comp_ver.output.trim().to_string(),
     }
+}
+
+/// dpkg -V 는 패키지 md5 와 다른 파일만 출력한다.
+/// popmgr 가 빌드해 덮어쓴 경우에만 차이가 생기므로, 차이가 있으면 패치 적용 상태로 본다.
+/// 시스템 업그레이드/재설치로 스톡 바이너리가 복원되면 차이가 사라져 자동으로 "미적용"이 된다.
+async fn binary_patched(pkg: &str, bin: &str) -> bool {
+    let script = format!(
+        "dpkg -V {pkg} 2>/dev/null | grep -qE '[[:space:]]{bin}$' && echo yes || echo no"
+    );
+    runner::run("bash", &["-c", &script]).await.output.trim() == "yes"
 }
 
 async fn apply_copy_path_patch() -> CmdResult {
