@@ -1,9 +1,9 @@
 use iced::{
     widget::{column, container, row, scrollable, text, Space},
-    Color, Element, Length, Task,
+    Element, Length, Task,
 };
 use crate::runner::{self, CmdResult};
-use super::ime::{action_btn, card, running_bar, C_BLUE, C_DIM, C_GREEN, C_OK};
+use super::ime::{action_btn, card, running_bar, C_BLUE, C_DIM, C_GREEN, C_OK, C_BTN2, C_WARN, C_ERR};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PartInfo {
@@ -108,7 +108,7 @@ impl DiskState {
             self.disks.iter().partition(|d| d.removable || d.tran == "usb");
 
         // 외장 디스크
-        col = col.push(text("외장 디스크").size(14).color(Color::from_rgb(0.7, 0.7, 0.8)));
+        col = col.push(text("외장 디스크").size(14).color(C_DIM));
         col = col.push(Space::with_height(8));
         if external.is_empty() {
             col = col.push(card(
@@ -128,7 +128,7 @@ impl DiskState {
             .filter(|d| d.parts.iter().any(part_actionable))
             .collect();
         if !internal_mountable.is_empty() {
-            col = col.push(text("내장 파티션").size(14).color(Color::from_rgb(0.7, 0.7, 0.8)));
+            col = col.push(text("내장 파티션").size(14).color(C_DIM));
             col = col.push(Space::with_height(8));
             for d in internal_mountable {
                 col = col.push(disk_card(d, is_busy, false));
@@ -139,7 +139,7 @@ impl DiskState {
         col = col.push(Space::with_height(8));
         let actions = row![
             Space::with_width(Length::Fill),
-            action_btn("새로고침", DiskMsg::Refresh, !is_busy, Color::from_rgb(0.3, 0.3, 0.4)),
+            action_btn("새로고침", DiskMsg::Refresh, !is_busy, C_BTN2),
         ];
         col = col.push(actions);
 
@@ -210,7 +210,7 @@ fn disk_card<'a>(d: &'a DiskGroup, is_busy: bool, external: bool) -> Element<'a,
                 r = r.push(action_btn("열기", DiskMsg::Open(mp.clone()), !is_busy, C_GREEN));
                 if is_user_mount(mp) {
                     r = r.push(Space::with_width(6));
-                    r = r.push(action_btn("해제", DiskMsg::Unmount(p.path.clone()), !is_busy, Color::from_rgb(0.6, 0.4, 0.15)));
+                    r = r.push(action_btn("해제", DiskMsg::Unmount(p.path.clone()), !is_busy, C_WARN));
                 }
             }
             None => {
@@ -239,7 +239,7 @@ fn disk_card<'a>(d: &'a DiskGroup, is_busy: bool, external: bool) -> Element<'a,
             "안전 제거",
             DiskMsg::PowerOff(d.path.clone()),
             !is_busy && !any_mounted,
-            Color::from_rgb(0.55, 0.2, 0.2),
+            C_ERR,
         ));
         body = body.push(bottom);
     }

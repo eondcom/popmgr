@@ -3,7 +3,7 @@ use iced::{
     Color, Element, Length, Task,
 };
 use crate::runner::{self, CmdResult};
-use super::ime::{action_btn, card, running_bar, C_DIM, C_ERR, C_OK, C_WARN};
+use super::ime::{action_btn, card, running_bar, C_BLUE, C_BORDER, C_BTN2, C_DIM, C_ERR, C_OK, C_SURFACE, C_SURFACE2, C_TEXT, C_WARN};
 
 #[derive(Debug, Clone)]
 pub struct Package {
@@ -685,13 +685,13 @@ EOF
                 row![
                     text(format!("{marked_count}개 선택됨")).size(12).color(C_DIM),
                     Space::with_width(Length::Fill),
-                    action_btn("새로고침", AppsMsg::Refresh, !is_running, Color::from_rgb(0.25, 0.25, 0.35)),
+                    action_btn("새로고침", AppsMsg::Refresh, !is_running, C_BTN2),
                     Space::with_width(8),
                     action_btn(
                         remove_label,
                         AppsMsg::RemoveMarked,
                         !is_running && marked_count > 0,
-                        Color::from_rgb(0.75, 0.15, 0.15),
+                        C_ERR,
                     ),
                 ]
                 .align_y(iced::Alignment::Center)
@@ -717,7 +717,7 @@ fn kakaotalk_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'stati
     let ime_patched = status.map(|s| s.kakaotalk_ime_patched).unwrap_or(false);
 
     let mut left = column![
-        text("KakaoTalk (Wine)").size(14).color(Color::from_rgb(0.9, 0.9, 0.95)),
+        text("KakaoTalk (Wine)").size(14).color(C_TEXT),
         Space::with_height(3),
         text("eondcom/kakaotalk-wine — Wine 기반 카카오톡 Linux 설치").size(11).color(C_DIM),
         Space::with_height(4),
@@ -771,12 +771,12 @@ fn kakaotalk_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'stati
 }
 
 fn pkg_row(idx: usize, pkg: &Package, disabled: bool) -> Element<'_, AppsMsg> {
-    let bg = if pkg.marked { Color::from_rgb(0.14, 0.05, 0.05) } else { Color::from_rgb(0.1, 0.1, 0.13) };
-    let border = if pkg.marked { C_ERR } else { Color::from_rgb(0.2, 0.2, 0.25) };
+    let bg = if pkg.marked { Color { r: 0.996, g: 0.925, b: 0.933, a: 1.0 } } else { C_SURFACE };
+    let border = if pkg.marked { C_ERR } else { C_BORDER };
     let kind_txt = match pkg.kind { PkgKind::Apt => "APT", PkgKind::Flatpak => "Flatpak" };
-    let kind_col = match pkg.kind { PkgKind::Apt => Color::from_rgb(0.3, 0.6, 0.9), PkgKind::Flatpak => Color::from_rgb(0.6, 0.4, 0.9) };
+    let kind_col = match pkg.kind { PkgKind::Apt => C_BLUE, PkgKind::Flatpak => Color::from_rgb(0.55, 0.36, 0.96) };
 
-    let check_bg = if pkg.marked { C_ERR } else { Color::from_rgb(0.15, 0.15, 0.18) };
+    let check_bg = if pkg.marked { C_ERR } else { C_SURFACE2 };
     let check_txt = if pkg.marked { "●" } else { " " };
 
     let checkbox = container(
@@ -785,7 +785,7 @@ fn pkg_row(idx: usize, pkg: &Package, disabled: bool) -> Element<'_, AppsMsg> {
     .width(20).height(20)
     .style(move |_| iced::widget::container::Style {
         background: Some(iced::Background::Color(check_bg)),
-        border: iced::Border { radius: 4.0.into(), color: Color::from_rgb(0.35, 0.35, 0.4), width: 1.5 },
+        border: iced::Border { radius: 4.0.into(), color: C_BORDER, width: 1.5 },
         ..Default::default()
     });
 
@@ -794,7 +794,7 @@ fn pkg_row(idx: usize, pkg: &Package, disabled: bool) -> Element<'_, AppsMsg> {
         Space::with_width(10),
         column![
             row![
-                text(&pkg.name).size(13).color(Color::from_rgb(0.85, 0.85, 0.9)),
+                text(&pkg.name).size(13).color(C_TEXT),
                 Space::with_width(8),
                 text(kind_txt).size(10).color(kind_col),
                 Space::with_width(8),
@@ -813,7 +813,7 @@ fn pkg_row(idx: usize, pkg: &Package, disabled: bool) -> Element<'_, AppsMsg> {
     .style(move |_, _| iced::widget::button::Style {
         background: Some(iced::Background::Color(bg)),
         border: iced::Border { radius: 7.0.into(), color: border, width: 1.0 },
-        text_color: Color::WHITE,
+        text_color: C_TEXT,
         ..Default::default()
     })
     .into()

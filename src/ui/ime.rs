@@ -347,8 +347,8 @@ impl ImeState {
 }
 
 fn ime_row(kind: ImeKind, installed: bool, selected: bool, disabled: bool) -> Element<'static, ImeMsg> {
-    let sel_color = if selected { C_BLUE } else { C_PANEL };
-    let border_color = if selected { C_BLUE } else { Color::from_rgb(0.2, 0.2, 0.25) };
+    let sel_color = if selected { Color { r: 0.918, g: 0.953, b: 0.996, a: 1.0 } } else { C_SURFACE };
+    let border_color = if selected { C_BLUE } else { C_BORDER };
 
     let status_txt = if installed { "설치됨" } else { "미설치" };
     let status_col = if installed { C_OK } else { C_DIM };
@@ -359,8 +359,8 @@ fn ime_row(kind: ImeKind, installed: bool, selected: bool, disabled: bool) -> El
         Space::with_width(0).into()
     };
 
-    let radio_bg = if selected { C_BLUE } else { Color::from_rgb(0.15, 0.15, 0.18) };
-    let radio_border = if selected { C_BLUE } else { Color::from_rgb(0.35, 0.35, 0.4) };
+    let radio_bg = if selected { C_BLUE } else { C_SURFACE };
+    let radio_border = if selected { C_BLUE } else { C_DIM };
     let radio = container(Space::new(10, 10))
         .width(14).height(14)
         .style(move |_| iced::widget::container::Style {
@@ -375,7 +375,7 @@ fn ime_row(kind: ImeKind, installed: bool, selected: bool, disabled: bool) -> El
         radio,
         Space::with_width(10),
         column![
-            text(label_str).size(14).color(if selected { Color::WHITE } else { Color::from_rgb(0.85, 0.85, 0.9) }),
+            text(label_str).size(14).color(if selected { C_BLUE } else { C_TEXT }),
             text(status_txt).size(11).color(status_col),
         ],
         Space::with_width(Length::Fill),
@@ -384,14 +384,14 @@ fn ime_row(kind: ImeKind, installed: bool, selected: bool, disabled: bool) -> El
     .align_y(iced::Alignment::Center);
 
     button(
-        container(row_inner).padding([10, 14])
+        container(row_inner).padding([12, 16])
     )
     .width(Length::Fill)
     .on_press(select_msg)
     .style(move |_, _| iced::widget::button::Style {
         background: Some(iced::Background::Color(sel_color)),
-        border: iced::Border { radius: 8.0.into(), color: border_color, width: 1.5 },
-        text_color: Color::WHITE,
+        border: iced::Border { radius: 12.0.into(), color: border_color, width: if selected { 1.5 } else { 1.0 } },
+        text_color: C_TEXT,
         ..Default::default()
     })
     .into()
@@ -895,7 +895,7 @@ fn shell_conflict_card<'a>(
         Space::with_height(8),
     ];
     for c in conflicts {
-        col = col.push(text(format!("· {}", c.path)).size(12).color(Color::from_rgb(0.85,0.85,0.9)));
+        col = col.push(text(format!("· {}", c.path)).size(12).color(C_TEXT));
         for line in &c.lines {
             col = col.push(text(format!("    {}", line)).size(10).color(C_DIM));
         }
@@ -911,7 +911,7 @@ fn shell_conflict_card<'a>(
         .width(Length::Fill)
         .padding([12, 14])
         .style(|_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.12, 0.06, 0.05))),
+            background: Some(iced::Background::Color(Color { r: 0.996, g: 0.925, b: 0.933, a: 1.0 })),
             border: iced::Border { radius: 8.0.into(), color: C_ERR, width: 1.0 },
             ..Default::default()
         })
@@ -954,8 +954,8 @@ fn resume_hook_card(installed: bool, disabled: bool) -> Element<'static, ImeMsg>
         .padding([12, 14])
         .style(move |_| iced::widget::container::Style {
             background: Some(iced::Background::Color(
-                if installed { Color::from_rgb(0.04, 0.10, 0.06) }
-                else         { Color::from_rgb(0.12, 0.08, 0.03) }
+                if installed { Color { r: 0.906, g: 0.976, b: 0.949, a: 1.0 } }
+                else         { Color { r: 1.0, g: 0.973, b: 0.922, a: 1.0 } }
             )),
             border: iced::Border {
                 radius: 8.0.into(),
@@ -974,16 +974,16 @@ fn snap_leak_card(leak: &str) -> Element<'static, ImeMsg> {
         text("현재 셸/세션의 환경변수가 snap 캐시를 가리키고 있습니다. 이 변수가 IntelliJ 등 자식 프로세스로 전파되면 시스템 GTK IM 모듈을 못 찾아 한글 입력이 깨집니다.")
             .size(11).color(C_DIM),
         Space::with_height(6),
-        text(format!("값: {}", leak)).size(10).color(Color::from_rgb(0.75, 0.7, 0.55)),
+        text(format!("값: {}", leak)).size(10).color(C_WARN),
         Space::with_height(6),
         text("해결: 셸에서 `unset GTK_IM_MODULE_FILE` 후 IDE 재실행. 영구 해결은 snap 앱을 데스크탑 세션 환경 밖(예: 별도 터미널)에서 띄우거나 제거.")
-            .size(11).color(Color::from_rgb(0.7, 0.75, 0.85)),
+            .size(11).color(C_DIM),
     ];
     container(body)
         .width(Length::Fill)
         .padding([12, 14])
         .style(|_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.12, 0.08, 0.03))),
+            background: Some(iced::Background::Color(Color { r: 1.0, g: 0.973, b: 0.922, a: 1.0 })),
             border: iced::Border { radius: 8.0.into(), color: C_WARN, width: 1.0 },
             ..Default::default()
         })
@@ -1010,7 +1010,7 @@ fn jetbrains_card<'a>(
         let status_col = if flags.is_empty() { C_OK } else { C_WARN };
         col = col.push(
             row![
-                text(format!("· {}", ide.name)).size(12).color(Color::from_rgb(0.85,0.85,0.9)),
+                text(format!("· {}", ide.name)).size(12).color(C_TEXT),
                 Space::with_width(Length::Fill),
                 text(status).size(11).color(status_col),
             ]
@@ -1027,7 +1027,7 @@ fn jetbrains_card<'a>(
         .width(Length::Fill)
         .padding([12, 14])
         .style(|_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.05, 0.07, 0.12))),
+            background: Some(iced::Background::Color(Color { r: 0.918, g: 0.953, b: 0.996, a: 1.0 })),
             border: iced::Border { radius: 8.0.into(), color: C_BLUE, width: 1.0 },
             ..Default::default()
         })
@@ -1036,36 +1036,52 @@ fn jetbrains_card<'a>(
 
 // ── 공통 위젯 ───────────────────────────────────────────────────
 
-pub const C_OK:    Color = Color { r: 0.2,  g: 0.78, b: 0.35, a: 1.0 };
-pub const C_ERR:   Color = Color { r: 0.9,  g: 0.25, b: 0.25, a: 1.0 };
-pub const C_WARN:  Color = Color { r: 0.9,  g: 0.65, b: 0.1,  a: 1.0 };
-pub const C_DIM:   Color = Color { r: 0.45, g: 0.45, b: 0.5,  a: 1.0 };
-pub const C_BLUE:  Color = Color { r: 0.13, g: 0.45, b: 0.85, a: 1.0 };
-pub const C_GREEN: Color = Color { r: 0.15, g: 0.65, b: 0.3,  a: 1.0 };
-pub const C_PANEL: Color = Color { r: 0.12, g: 0.12, b: 0.15, a: 1.0 };
+// Toss 라이트 팔레트 (금융권 톤: 회색 캔버스 + 흰 카드 + 단일 블루 강조)
+pub const C_OK:       Color = Color { r: 0.082, g: 0.769, b: 0.494, a: 1.0 }; // #15C47E
+pub const C_ERR:      Color = Color { r: 0.941, g: 0.267, b: 0.322, a: 1.0 }; // #F04452
+pub const C_WARN:     Color = Color { r: 0.96,  g: 0.55,  b: 0.0,   a: 1.0 }; // #F58C00
+pub const C_DIM:      Color = Color { r: 0.545, g: 0.584, b: 0.631, a: 1.0 }; // #8B95A1 보조 텍스트
+pub const C_BLUE:     Color = Color { r: 0.192, g: 0.510, b: 0.965, a: 1.0 }; // #3182F6 토스 블루
+pub const C_GREEN:    Color = Color { r: 0.082, g: 0.769, b: 0.494, a: 1.0 };
+pub const C_PANEL:    Color = Color { r: 1.0,   g: 1.0,   b: 1.0,   a: 1.0 }; // 카드 표면(흰색)
+pub const C_BG:       Color = Color { r: 0.949, g: 0.957, b: 0.965, a: 1.0 }; // #F2F4F6 캔버스
+pub const C_SURFACE:  Color = Color { r: 1.0,   g: 1.0,   b: 1.0,   a: 1.0 }; // 카드/패널(흰색)
+pub const C_SURFACE2: Color = Color { r: 0.949, g: 0.957, b: 0.965, a: 1.0 }; // 인셋/보조 표면
+pub const C_BORDER:   Color = Color { r: 0.898, g: 0.910, b: 0.922, a: 1.0 }; // #E5E8EB 헤어라인
+pub const C_TEXT:     Color = Color { r: 0.098, g: 0.122, b: 0.157, a: 1.0 }; // #191F28 본문
+pub const C_BTN2:     Color = Color { r: 0.910, g: 0.925, b: 0.937, a: 1.0 }; // #E8ECF0 보조 버튼
 
 pub fn action_btn<'a, M: Clone + 'a>(label: impl Into<String>, msg: M, enabled: bool, color: Color) -> Element<'a, M> {
-    let bg = if enabled { color } else { Color::from_rgb(0.2, 0.2, 0.22) };
-    let tc = if enabled { Color::WHITE } else { Color::from_rgb(0.4, 0.4, 0.4) };
+    let bg = if enabled { color } else { C_BTN2 };
+    // 배경 휘도에 따라 글자색 자동 선택(라이트 보조버튼=어두운 글자, 컬러 버튼=흰 글자).
+    let on = |c: Color| if luminance(c) > 0.62 { C_TEXT } else { Color::WHITE };
+    let tc = if enabled { on(bg) } else { C_DIM };
     let b = button(text(label.into()).size(13).color(tc))
-        .padding([8, 18])
-        .style(move |_, _| iced::widget::button::Style {
-            background: Some(iced::Background::Color(bg)),
-            border: iced::Border { radius: 7.0.into(), ..Default::default() },
-            text_color: tc,
-            ..Default::default()
+        .padding([11, 22])
+        .style(move |_, status| {
+            let bg = match status {
+                iced::widget::button::Status::Hovered if enabled => shade(bg, 0.05),
+                _ => bg,
+            };
+            iced::widget::button::Style {
+                background: Some(iced::Background::Color(bg)),
+                border: iced::Border { radius: 12.0.into(), ..Default::default() },
+                text_color: tc,
+                ..Default::default()
+            }
         });
     if enabled { b.on_press(msg).into() } else { b.into() }
 }
 
 pub fn running_bar<'a, M: 'a>(label: &'a str) -> Element<'a, M> {
     container(
-        text(label).size(12).color(Color::from_rgb(0.9, 0.8, 0.3))
+        text(label).size(12).color(Color { r: 0.70, g: 0.42, b: 0.0, a: 1.0 })
     )
-    .padding([6, 12])
+    .padding([11, 16])
+    .width(Length::Fill)
     .style(|_| iced::widget::container::Style {
-        background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.09, 0.02))),
-        border: iced::Border { radius: 6.0.into(), color: Color::from_rgb(0.4, 0.35, 0.1), width: 1.0 },
+        background: Some(iced::Background::Color(Color { r: 1.0, g: 0.965, b: 0.898, a: 1.0 })), // #FFF6E5
+        border: iced::Border { radius: 12.0.into(), color: Color { r: 1.0, g: 0.886, b: 0.667, a: 1.0 }, width: 1.0 },
         ..Default::default()
     })
     .into()
@@ -1074,11 +1090,24 @@ pub fn running_bar<'a, M: 'a>(label: &'a str) -> Element<'a, M> {
 pub fn card<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
     container(content)
         .width(Length::Fill)
-        .padding([14, 16])
+        .padding([18, 20])
         .style(|_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.1, 0.13))),
-            border: iced::Border { radius: 9.0.into(), color: Color::from_rgb(0.2, 0.2, 0.26), width: 1.0 },
+            background: Some(iced::Background::Color(C_SURFACE)),
+            border: iced::Border { radius: 18.0.into(), color: C_BORDER, width: 1.0 },
+            shadow: iced::Shadow {
+                color: Color { r: 0.06, g: 0.10, b: 0.16, a: 0.06 },
+                offset: iced::Vector::new(0.0, 2.0),
+                blur_radius: 16.0,
+            },
             ..Default::default()
         })
         .into()
+}
+
+/// 상대 휘도(글자 대비 판단용).
+pub fn luminance(c: Color) -> f32 { 0.299 * c.r + 0.587 * c.g + 0.114 * c.b }
+
+/// amt 만큼 어둡게(양수) — hover 강조용. 밝은 버튼은 어둡게, 그게 라이트 UI 관습.
+pub fn shade(c: Color, amt: f32) -> Color {
+    Color { r: (c.r - amt).max(0.0), g: (c.g - amt).max(0.0), b: (c.b - amt).max(0.0), a: c.a }
 }

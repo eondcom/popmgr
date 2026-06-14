@@ -14,6 +14,26 @@ use ui::{
     ime::{ImeMsg, ImeState},
     usb::{UsbMsg, UsbState},
 };
+use ui::ime::{C_BG, C_BLUE, C_BORDER, C_DIM, C_OK, C_ERR, C_SURFACE, C_TEXT};
+
+/// 두 색을 비율 t(0~1)로 섞기.
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    Color { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: 1.0 }
+}
+
+/// 앱 전역 Toss 라이트 테마. 윈도우 배경·슬라이더·스크롤바·입력창 기본색을 결정.
+fn app_theme() -> iced::Theme {
+    iced::Theme::custom(
+        "Toss Light".to_string(),
+        iced::theme::Palette {
+            background: C_BG,
+            text: C_TEXT,
+            primary: C_BLUE,
+            success: C_OK,
+            danger: C_ERR,
+        },
+    )
+}
 
 #[derive(Debug, Clone, PartialEq)]
 enum Tab { Ime, Usb, Audio, Disk, Cosmic, Apps }
@@ -60,7 +80,7 @@ fn main() -> iced::Result {
     ).ok();
 
     iced::application("popmgr", update, view)
-        .theme(|_| iced::Theme::Dark)
+        .theme(|_| app_theme())
         .font(include_bytes!("../assets/NanumGothic.ttf"))
         .font(include_bytes!("../assets/NanumSquareR.ttf"))
         .font(include_bytes!("../assets/DejaVuSans.ttf")) // ✓ ✗ ⚠ █ ░ 등 기호 폴백
@@ -301,7 +321,7 @@ fn view(app: &App) -> Element<'_, Message> {
 
     let right = column![
         scrollable(
-            container(content).width(Length::Fill).padding([20, 24])
+            container(content).width(Length::Fill).padding([24, 28])
         ).height(Length::Fill),
         log_panel,
     ]
@@ -322,55 +342,59 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
     ];
 
     let logo = container(
-        text("popmgr")
-            .size(18)
-            .color(Color::from_rgb(0.35, 0.65, 1.0))
+        column![
+            text("popmgr").size(22).color(C_TEXT),
+            Space::with_height(2),
+            text("Pop!_OS 관리 도구").size(10).color(C_DIM),
+        ]
     )
-    .padding(iced::Padding { top: 18.0, right: 16.0, bottom: 6.0, left: 16.0 });
+    .padding(iced::Padding { top: 22.0, right: 18.0, bottom: 18.0, left: 18.0 });
 
-    let sub = container(
-        text("Pop!_OS 관리 도구")
-            .size(10)
-            .color(Color::from_rgb(0.4, 0.4, 0.5))
-    )
-    .padding(iced::Padding { top: 0.0, right: 16.0, bottom: 16.0, left: 16.0 });
-
-    let mut col = column![logo, sub];
+    let mut col = column![logo].spacing(4);
 
     for (tab, label, hint) in tabs {
         let active = &app.tab == tab;
-        let bg = if active { Color::from_rgb(0.1, 0.25, 0.5) } else { Color::from_rgba(0.0, 0.0, 0.0, 0.0) };
-        let tc = if active { Color::WHITE } else { Color::from_rgb(0.65, 0.65, 0.72) };
+        // 활성: 연한 블루 배경 + 블루 텍스트(토스 사이드 내비 방식)
+        let active_bg = mix(C_SURFACE, C_BLUE, 0.10);
+        let bg = if active { active_bg } else { C_SURFACE };
+        let tc = if active { C_BLUE } else { Color::from_rgb(0.30, 0.34, 0.40) };
+        let hc = if active { mix(C_BLUE, C_TEXT, 0.35) } else { C_DIM };
 
         let btn = button(
             column![
-                text(*label).size(13).color(tc),
-                text(*hint).size(10).color(if active { Color::from_rgb(0.7, 0.85, 1.0) } else { Color::from_rgb(0.4, 0.4, 0.45) }),
+                text(*label).size(14).color(tc),
+                text(*hint).size(10).color(hc),
             ]
-            .spacing(1)
+            .spacing(2)
         )
         .width(Length::Fill)
-        .padding([8, 14])
+        .padding([11, 16])
         .on_press(Message::TabSelect(tab.clone()))
-        .style(move |_, _| iced::widget::button::Style {
-            background: Some(iced::Background::Color(bg)),
-            border: iced::Border { radius: 6.0.into(), ..Default::default() },
-            text_color: tc,
-            ..Default::default()
+        .style(move |_, status| {
+            let bg = match status {
+                iced::widget::button::Status::Hovered if !active => C_BG,
+                _ => bg,
+            };
+            iced::widget::button::Style {
+                background: Some(iced::Background::Color(bg)),
+                border: iced::Border { radius: 12.0.into(), ..Default::default() },
+                text_color: tc,
+                ..Default::default()
+            }
         });
 
         col = col.push(
-            container(btn).padding(iced::Padding { top: 0.0, right: 8.0, bottom: 2.0, left: 8.0 })
+            container(btn).padding(iced::Padding { top: 0.0, right: 12.0, bottom: 0.0, left: 12.0 })
         );
     }
 
     container(col)
-        .width(150)
+        .width(190)
         .height(Length::Fill)
         .style(|_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.07, 0.07, 0.09))),
+            background: Some(iced::Background::Color(C_SURFACE)),
             border: iced::Border {
-                color: Color::from_rgb(0.15, 0.15, 0.2),
+                color: C_BORDER,
                 width: 1.0,
                 radius: 0.0.into(),
             },
@@ -386,23 +410,29 @@ fn log_panel_view(output: &str) -> Element<'_, Message> {
         output
     };
     let log_col = if output.is_empty() {
-        Color::from_rgb(0.35, 0.35, 0.4)
+        C_DIM
     } else {
-        Color::from_rgb(0.5, 0.8, 0.5)
+        C_TEXT
     };
 
-    let copy_btn = button(text("복사").size(11).color(Color::from_rgb(0.5, 0.7, 0.5)))
+    let copy_btn = button(text("복사").size(11).color(C_BLUE))
         .on_press(Message::CopyLog)
-        .padding([3, 8])
-        .style(|_, _| iced::widget::button::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.06, 0.12, 0.06))),
-            border: iced::Border { radius: 4.0.into(), color: Color::from_rgb(0.18, 0.3, 0.18), width: 1.0 },
-            text_color: Color::from_rgb(0.5, 0.7, 0.5),
-            ..Default::default()
+        .padding([4, 12])
+        .style(|_, status| {
+            let bg = match status {
+                iced::widget::button::Status::Hovered => Color::from_rgba(1.0, 1.0, 1.0, 0.06),
+                _ => Color::from_rgba(1.0, 1.0, 1.0, 0.03),
+            };
+            iced::widget::button::Style {
+                background: Some(iced::Background::Color(bg)),
+                border: iced::Border { radius: 8.0.into(), color: C_BORDER, width: 1.0 },
+                text_color: C_BLUE,
+                ..Default::default()
+            }
         });
 
     let header = row![
-        text("로그").size(11).color(Color::from_rgb(0.35, 0.5, 0.35)),
+        text("로그").size(11).color(C_DIM),
         Space::with_width(Length::Fill),
         copy_btn,
     ]
@@ -420,8 +450,8 @@ fn log_panel_view(output: &str) -> Element<'_, Message> {
     )
     .width(Length::Fill)
     .style(|_| iced::widget::container::Style {
-        background: Some(iced::Background::Color(Color::from_rgb(0.04, 0.07, 0.04))),
-        border: iced::Border { color: Color::from_rgb(0.12, 0.2, 0.12), width: 1.0, radius: 0.0.into() },
+        background: Some(iced::Background::Color(C_SURFACE)),
+        border: iced::Border { color: C_BORDER, width: 1.0, radius: 0.0.into() },
         ..Default::default()
     })
     .into()

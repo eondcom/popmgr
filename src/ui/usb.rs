@@ -3,7 +3,7 @@ use iced::{
     Color, Element, Length, Task,
 };
 use crate::runner::{self, CmdResult};
-use super::ime::{action_btn, card, running_bar, C_DIM, C_ERR, C_OK, C_WARN};
+use super::ime::{action_btn, card, running_bar, C_BLUE, C_BORDER, C_BTN2, C_DIM, C_ERR, C_OK, C_SURFACE, C_TEXT, C_WARN};
 
 /// popmgr 전용 root 헬퍼. NOPASSWD sudoers 로만 호출되며 검증된 동작만 수행한다.
 /// /usr/local/bin/popmgr-helper 에 root 소유로 설치된다(사용자는 수정 불가).
@@ -309,12 +309,12 @@ impl UsbState {
             };
             col = col.push(card(
                 column![
-                    text("ktrackball 데몬").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+                    text("ktrackball 데몬").size(13).color(C_TEXT),
                     Space::with_height(6),
                     row![
                         text(ktb_txt).size(12).color(ktb_col),
                         Space::with_width(Length::Fill),
-                        action_btn("재시작", UsbMsg::RestartKtrackball, !is_running, Color::from_rgb(0.7, 0.3, 0.1)),
+                        action_btn("재시작", UsbMsg::RestartKtrackball, !is_running, C_WARN),
                     ].align_y(iced::Alignment::Center),
                 ]
             ));
@@ -327,9 +327,9 @@ impl UsbState {
             col = col.push(card(
                 column![
                     row![
-                        text("포인터 속도").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+                        text("포인터 속도").size(13).color(C_TEXT),
                         Space::with_width(Length::Fill),
-                        text(format!("{:.2}", cur_pct as f64 / 100.0)).size(12).color(Color::WHITE),
+                        text(format!("{:.2}", cur_pct as f64 / 100.0)).size(12).color(C_TEXT),
                     ].align_y(iced::Alignment::Center),
                     Space::with_height(8),
                     row![
@@ -355,9 +355,9 @@ impl UsbState {
                 col = col.push(card(
                     column![
                         row![
-                            text("트랙볼 가속 배율").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+                            text("트랙볼 가속 배율").size(13).color(C_TEXT),
                             Space::with_width(Length::Fill),
-                            text(format!("{:.2}x", tb_v as f64 / 100.0)).size(12).color(Color::WHITE),
+                            text(format!("{:.2}x", tb_v as f64 / 100.0)).size(12).color(C_TEXT),
                         ].align_y(iced::Alignment::Center),
                         Space::with_height(8),
                         row![
@@ -381,9 +381,9 @@ impl UsbState {
                 col = col.push(card(
                     column![
                         row![
-                            text("커서 크기").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+                            text("커서 크기").size(13).color(C_TEXT),
                             Space::with_width(Length::Fill),
-                            text(format!("{cs_v}px")).size(12).color(Color::WHITE),
+                            text(format!("{cs_v}px")).size(12).color(C_TEXT),
                         ].align_y(iced::Alignment::Center),
                         Space::with_height(8),
                         row![
@@ -404,12 +404,12 @@ impl UsbState {
                 // 헬퍼 미설치 → 1회 설치 안내
                 col = col.push(card(
                     column![
-                        text("트랙볼 배율 · 커서 크기").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+                        text("트랙볼 배율 · 커서 크기").size(13).color(C_TEXT),
                         Space::with_height(6),
                         text("이 두 설정은 root 권한이 필요합니다. 전용 헬퍼를 1회 설치하면\n이후 암호 없이(NOPASSWD) 슬라이더로 바로 조절할 수 있습니다.")
                             .size(11).color(C_DIM),
                         Space::with_height(10),
-                        action_btn("권한 헬퍼 설치 (1회)", UsbMsg::InstallHelper, !is_running, Color::from_rgb(0.15, 0.45, 0.75)),
+                        action_btn("권한 헬퍼 설치 (1회)", UsbMsg::InstallHelper, !is_running, C_BLUE),
                     ]
                 ));
             }
@@ -421,11 +421,11 @@ impl UsbState {
         col = col.push(
             row![
                 Space::with_width(Length::Fill),
-                action_btn("새로고침", UsbMsg::Refresh, !is_running, Color::from_rgb(0.25, 0.25, 0.35)),
+                action_btn("새로고침", UsbMsg::Refresh, !is_running, C_BTN2),
                 Space::with_width(8),
                 action_btn("USB 재인식", UsbMsg::RetrieveAll, !is_running, C_WARN),
                 Space::with_width(8),
-                action_btn("xHCI 리셋", UsbMsg::XhciReset, !is_running, Color::from_rgb(0.75, 0.15, 0.15)),
+                action_btn("xHCI 리셋", UsbMsg::XhciReset, !is_running, C_ERR),
             ]
             .align_y(iced::Alignment::Center)
         );
@@ -435,9 +435,9 @@ impl UsbState {
 }
 
 fn device_row(d: &UsbDevice, disabled: bool) -> Element<'_, UsbMsg> {
-    let bg = if d.highlight { Color::from_rgb(0.06, 0.14, 0.06) } else { Color::from_rgb(0.1, 0.1, 0.13) };
-    let border = if d.highlight { Color::from_rgb(0.15, 0.4, 0.15) } else { Color::from_rgb(0.2, 0.2, 0.25) };
-    let name_col = if d.highlight { C_OK } else { Color::from_rgb(0.85, 0.85, 0.9) };
+    let bg = if d.highlight { Color { r: 0.906, g: 0.976, b: 0.949, a: 1.0 } } else { C_SURFACE };
+    let border = if d.highlight { C_OK } else { C_BORDER };
+    let name_col = if d.highlight { C_OK } else { C_TEXT };
 
     let name = if d.product.is_empty() { &d.manufacturer } else { &d.product };
     let sub = format!("{} {}:{} {}Mbps", d.manufacturer, d.vid, d.pid, d.speed);
@@ -447,20 +447,20 @@ fn device_row(d: &UsbDevice, disabled: bool) -> Element<'_, UsbMsg> {
     container(
         row![
             text(d.icon).size(18),
-            Space::with_width(10),
+            Space::with_width(12),
             column![
                 text(name).size(13).color(name_col),
                 text(sub).size(11).color(C_DIM),
             ].width(Length::Fill),
-            action_btn("재인식", UsbMsg::RetrieveDev(sysfs_name), !disabled, Color::from_rgb(0.25, 0.25, 0.35)),
+            action_btn("재인식", UsbMsg::RetrieveDev(sysfs_name), !disabled, C_BTN2),
         ]
         .align_y(iced::Alignment::Center)
     )
-    .padding([8, 12])
+    .padding([12, 14])
     .width(Length::Fill)
     .style(move |_| iced::widget::container::Style {
         background: Some(iced::Background::Color(bg)),
-        border: iced::Border { radius: 7.0.into(), color: border, width: 1.0 },
+        border: iced::Border { radius: 12.0.into(), color: border, width: 1.0 },
         ..Default::default()
     })
     .into()
@@ -478,11 +478,11 @@ fn failed_port_row(fp: &UsbFailedPort) -> Element<'_, UsbMsg> {
         ]
         .align_y(iced::Alignment::Center)
     )
-    .padding([8, 12])
+    .padding([12, 14])
     .width(Length::Fill)
     .style(|_| iced::widget::container::Style {
-        background: Some(iced::Background::Color(Color::from_rgb(0.14, 0.05, 0.05))),
-        border: iced::Border { radius: 7.0.into(), color: C_ERR, width: 1.0 },
+        background: Some(iced::Background::Color(Color { r: 0.996, g: 0.925, b: 0.933, a: 1.0 })),
+        border: iced::Border { radius: 12.0.into(), color: C_ERR, width: 1.0 },
         ..Default::default()
     })
     .into()
@@ -496,9 +496,9 @@ fn xhci_confirm_card<'a>() -> Element<'a, UsbMsg> {
             text("모든 USB 장치가 잠시 연결 해제됩니다.\n계속하시겠습니까?").size(13),
             Space::with_height(16),
             row![
-                action_btn("취소", UsbMsg::CancelXhci, true, Color::from_rgb(0.25, 0.25, 0.35)),
+                action_btn("취소", UsbMsg::CancelXhci, true, C_BTN2),
                 Space::with_width(10),
-                action_btn("리셋 실행", UsbMsg::ConfirmXhci, true, Color::from_rgb(0.75, 0.15, 0.15)),
+                action_btn("리셋 실행", UsbMsg::ConfirmXhci, true, C_ERR),
             ],
         ]
     )

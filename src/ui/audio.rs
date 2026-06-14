@@ -1,9 +1,9 @@
 use iced::{
     widget::{column, container, pick_list, row, scrollable, slider, text, Space},
-    Color, Element, Length, Task,
+    Element, Length, Task,
 };
 use crate::runner::{self, CmdResult};
-use super::ime::{action_btn, card, running_bar, C_BLUE, C_DIM, C_ERR, C_GREEN, C_OK, C_WARN};
+use super::ime::{action_btn, card, running_bar, C_BLUE, C_BTN2, C_DIM, C_ERR, C_GREEN, C_OK, C_TEXT, C_WARN};
 
 const TEST_WAV: &str = "/tmp/popmgr-mictest.wav";
 
@@ -221,7 +221,7 @@ impl AudioState {
         let selected = opts.iter().find(|c| c.id == format!("{ctl}\t{cur}")).cloned();
         Some(card(
             column![
-                text("마이크 부스트 (아날로그 게인)").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+                text("마이크 부스트 (아날로그 게인)").size(13).color(C_TEXT),
                 Space::with_height(6),
                 row![
                     container(text("부스트").size(12).color(C_DIM)).width(50),
@@ -733,15 +733,15 @@ impl AudioState {
         let has_recording = matches!(self.last_test, MicTest::Ok { .. } | MicTest::Loop { .. });
         let mut actions = row![
             Space::with_width(Length::Fill),
-            action_btn("새로고침", AudioMsg::Refresh, !is_running, Color::from_rgb(0.3, 0.3, 0.4)),
+            action_btn("새로고침", AudioMsg::Refresh, !is_running, C_BTN2),
             Space::with_width(8),
-            action_btn("루프 테스트 (비프음)", AudioMsg::LoopTest, !is_running, Color::from_rgb(0.45, 0.3, 0.6)),
+            action_btn("루프 테스트 (비프음)", AudioMsg::LoopTest, !is_running, C_BTN2),
             Space::with_width(8),
             action_btn("마이크 테스트 (2초)", AudioMsg::TestMic, !is_running, C_BLUE),
         ].align_y(iced::Alignment::Center);
         if has_recording {
             actions = actions.push(Space::with_width(8));
-            actions = actions.push(action_btn("재생", AudioMsg::Play, !is_running, Color::from_rgb(0.25, 0.5, 0.3)));
+            actions = actions.push(action_btn("재생", AudioMsg::Play, !is_running, C_OK));
         }
         col = col.push(actions);
 
@@ -763,7 +763,7 @@ fn device_card<'a>(
     hint: Option<&'a str>,
 ) -> Element<'a, AudioMsg> {
     let mut body = column![
-        text(title).size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+        text(title).size(13).color(C_TEXT),
         Space::with_height(8),
     ];
 
@@ -806,7 +806,7 @@ fn device_card<'a>(
 
         // 볼륨 + 음소거
         let mute_label = if dev.muted { "음소거 해제" } else { "음소거" };
-        let mute_color = if dev.muted { C_ERR } else { Color::from_rgb(0.3, 0.3, 0.4) };
+        let mute_color = if dev.muted { C_ERR } else { C_BTN2 };
         body = body.push(Space::with_height(8));
         body = body.push(
             row![
@@ -815,7 +815,7 @@ fn device_card<'a>(
                 Space::with_width(8),
                 container(
                     text(format!("{vol}%")).size(12)
-                        .color(if dev.muted { C_ERR } else { Color::WHITE })
+                        .color(if dev.muted { C_ERR } else { C_TEXT })
                 ).width(40),
                 action_btn(mute_label, toggle_mute, true, mute_color),
             ]
@@ -837,7 +837,7 @@ fn device_card<'a>(
 
 fn lock_card<'a>(lock: Option<&'a AudioLock>, is_busy: bool) -> Element<'a, AudioMsg> {
     let mut body = column![
-        text("입력 설정 고정 (잭 재연결 시 자동 복원)").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+        text("입력 설정 고정 (잭 재연결 시 자동 복원)").size(13).color(C_TEXT),
         Space::with_height(6),
     ];
     match lock {
@@ -850,7 +850,7 @@ fn lock_card<'a>(lock: Option<&'a AudioLock>, is_busy: bool) -> Element<'a, Audi
                             port_label_kr(&l.port), l.volume_pct, l.boost_val * 10
                         )).size(12).color(C_OK)
                     ).width(Length::Fill),
-                    action_btn("고정 해제", AudioMsg::UnlockProfile, !is_busy, Color::from_rgb(0.5, 0.3, 0.2)),
+                    action_btn("고정 해제", AudioMsg::UnlockProfile, !is_busy, C_BTN2),
                 ].align_y(iced::Alignment::Center)
             );
             body = body.push(Space::with_height(4));
@@ -886,10 +886,10 @@ fn denoise_card<'a>(on: bool, is_busy: bool) -> Element<'a, AudioMsg> {
         ("○", "꺼짐 — 노트북 바닥 잡음이 그대로 녹음됩니다", C_DIM)
     };
     let btn_label = if on { "끄기" } else { "켜기" };
-    let btn_color = if on { Color::from_rgb(0.5, 0.3, 0.2) } else { C_GREEN };
+    let btn_color = if on { C_BTN2 } else { C_GREEN };
     card(
         column![
-            text("노이즈 억제 (주변/바닥 잡음 제거)").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+            text("노이즈 억제 (주변/바닥 잡음 제거)").size(13).color(C_TEXT),
             Space::with_height(6),
             row![
                 container(text(format!("{mark} {state}")).size(12).color(scol)).width(Length::Fill),
@@ -910,7 +910,7 @@ fn vref_card(v: &VrefInfo, is_busy: bool) -> Element<'_, AudioMsg> {
     };
 
     let mut body = column![
-        text("핀마이크 전원 (잭 마이크 바이어스)").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+        text("핀마이크 전원 (잭 마이크 바이어스)").size(13).color(C_TEXT),
         Space::with_height(8),
         row![
             text(format!("{mark} {state}")).size(12).color(scol),
@@ -935,11 +935,11 @@ fn vref_card(v: &VrefInfo, is_busy: bool) -> Element<'_, AudioMsg> {
         actions = actions.push(Space::with_width(8));
     }
     if !v.nopass {
-        actions = actions.push(action_btn("비번 없이 자동제어 설정", AudioMsg::VrefSetupNopass, !is_busy, Color::from_rgb(0.45, 0.3, 0.6)));
+        actions = actions.push(action_btn("비번 없이 자동제어 설정", AudioMsg::VrefSetupNopass, !is_busy, C_BTN2));
         actions = actions.push(Space::with_width(8));
     }
     if v.boot_patch {
-        actions = actions.push(action_btn("부팅 패치 제거", AudioMsg::VrefBootRemove, !is_busy, Color::from_rgb(0.5, 0.3, 0.2)));
+        actions = actions.push(action_btn("부팅 패치 제거", AudioMsg::VrefBootRemove, !is_busy, C_BTN2));
     } else {
         actions = actions.push(action_btn("부팅 시 영구 적용", AudioMsg::VrefBootInstall, !is_busy, C_GREEN));
     }
@@ -950,7 +950,7 @@ fn vref_card(v: &VrefInfo, is_busy: bool) -> Element<'_, AudioMsg> {
 
 fn jack_card(jacks: &[(String, bool)]) -> Element<'_, AudioMsg> {
     let mut body = column![
-        text("3.5mm 잭 감지 (하드웨어)").size(13).color(Color::from_rgb(0.7, 0.7, 0.8)),
+        text("3.5mm 잭 감지 (하드웨어)").size(13).color(C_TEXT),
         Space::with_height(8),
     ];
     if jacks.is_empty() {

@@ -1,9 +1,9 @@
 use iced::{
     widget::{column, container, row, scrollable, text, Space},
-    Color, Element, Length, Task,
+    Element, Length, Task,
 };
 use crate::runner::{self, CmdResult};
-use super::ime::{action_btn, card, running_bar, C_DIM, C_ERR, C_OK, C_WARN};
+use super::ime::{action_btn, card, running_bar, C_BLUE, C_DIM, C_ERR, C_OK, C_TEXT};
 
 // 패치 적용 여부를 ~/.local/share/popmgr/patches.json 에 기록
 const MARKER_FILE: &str = "patches.json";
@@ -139,9 +139,9 @@ fn patch_card(
     let status_col = if patched { C_OK } else { C_DIM };
 
     let btn: Element<'static, CosmicMsg> = if patched {
-        action_btn("패치 제거", remove_msg, !disabled, Color::from_rgb(0.55, 0.18, 0.18))
+        action_btn("패치 제거", remove_msg, !disabled, C_ERR)
     } else {
-        action_btn("패치 적용", apply_msg, !disabled, Color::from_rgb(0.15, 0.45, 0.75))
+        action_btn("패치 적용", apply_msg, !disabled, C_BLUE)
     };
 
     let ver_label = format!("설치 버전: {version}");
@@ -149,11 +149,11 @@ fn patch_card(
         column![
             row![
                 column![
-                    text(title).size(13).color(Color::from_rgb(0.9, 0.9, 0.95)),
+                    text(title).size(13).color(C_TEXT),
                     Space::with_height(3),
                     text(desc).size(11).color(C_DIM),
                     Space::with_height(4),
-                    text(ver_label).size(11).color(Color::from_rgb(0.5, 0.5, 0.6)),
+                    text(ver_label).size(11).color(C_DIM),
                 ].width(Length::Fill),
                 column![
                     text(status_txt).size(12).color(status_col),
