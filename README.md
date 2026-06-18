@@ -34,6 +34,14 @@ Pop!_OS / COSMIC 데스크톱 관리 도구 — Rust + [Iced](https://github.com
 - 개별 장치 재인식 / 전체 USB 재인식
 - xHCI 컨트롤러 리셋 (확인 다이얼로그 포함)
 
+### 디스플레이 탭
+- 내장·외부 모니터 **밝기 조절** (외부는 명암까지)
+- **내장 디스플레이**: logind `SetBrightness` 로 root 없이 백라이트 제어 (`/sys/class/backlight`)
+- **외부 모니터**: DDC/CI(`ddcutil`)로 제어 — COSMIC 상단바 밝기 슬라이더는 백라이트 sysfs만 읽어 외부 모니터가 누락되는 문제를 보완
+- 슬라이더는 드래그 중 즉시 반영하고 놓을 때 적용 (ddcutil 호출 지연 회피)
+- **재인식** 버튼: 재부팅 후 `i2c-dev` 모듈 미로드 등으로 외부 모니터가 안 보일 때 모듈 재로드 + udev 재트리거
+- ddcutil 설치 시 udev 룰이 연결된 모니터 i2c 장치에 세션 사용자 ACL(uaccess)을 부여하므로 i2c 그룹 가입·재로그인 없이 동작. 미설정 시 "권한 설정" 카드 노출
+
 ### COSMIC 트윅 탭
 - **cosmic-files copy-path** — 탐색기 우클릭에 '경로 복사' 항상 표시
 - **cosmic-comp 3-finger** — 터치패드 3손가락 위 스와이프 → 워크스페이스 오버뷰
@@ -116,6 +124,11 @@ sudo cp /usr/bin/cosmic-comp.bak /usr/bin/cosmic-comp
 - 폰트: NanumSquare (UI) + NanumGothic (한글 폴백)
 
 ## 변경 이력
+
+### 2026-06-19 — 디스플레이 탭 신설 (모니터 밝기)
+- 내장(logind)·외부(ddcutil DDC/CI) 모니터 밝기·명암 조절 탭 추가. 외부 모니터는 백라이트 sysfs가 없어 COSMIC 상단바에 안 뜨던 것을 보완.
+- 외부 모니터 미인식 대비 '재인식' 버튼(i2c-dev 재로드 + udev 재트리거) 및 권한 미설정 시 '권한 설정' 카드 제공.
+- 기본 글꼴을 NanumSquare **Bold** 페이스로 변경 — 라이트 테마에서 Regular 가 가늘어 흐려 보이던 문제 해결 (cosmic-text 0.12 는 합성 볼드 미지원이라 Bold ttf 임베드).
 
 ### 2026-06-18 — 커널 알려진 문제 문서 추가
 - `docs/kernel-known-issues.md` 신설. 커널 `7.0.11-76070011` 의 slab shrinker 손상 반복 프리즈 진단/롤백 절차 기록.

@@ -11,6 +11,7 @@ use ui::{
     audio::{AudioMsg, AudioState},
     cosmic_tweaks::{CosmicMsg, CosmicState},
     disk::{DiskMsg, DiskState},
+    display::{DisplayMsg, DisplayState},
     ime::{ImeMsg, ImeState},
     usb::{UsbMsg, UsbState},
 };
@@ -36,7 +37,7 @@ fn app_theme() -> iced::Theme {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Tab { Ime, Usb, Audio, Disk, Cosmic, Apps }
+enum Tab { Ime, Usb, Audio, Disk, Display, Cosmic, Apps }
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -45,6 +46,7 @@ enum Message {
     Usb(UsbMsg),
     Audio(AudioMsg),
     Disk(DiskMsg),
+    Display(DisplayMsg),
     Cosmic(CosmicMsg),
     Apps(AppsMsg),
     CopyLog,
@@ -57,6 +59,7 @@ struct App {
     usb: UsbState,
     audio: AudioState,
     disk: DiskState,
+    display: DisplayState,
     cosmic: CosmicState,
     apps: AppsState,
     output: String,
@@ -83,8 +86,13 @@ fn main() -> iced::Result {
         .theme(|_| app_theme())
         .font(include_bytes!("../assets/NanumGothic.ttf"))
         .font(include_bytes!("../assets/NanumSquareR.ttf"))
+        .font(include_bytes!("../assets/NanumSquareB.ttf")) // 볼드 페이스 — cosmic-text는 합성 볼드 미지원
         .font(include_bytes!("../assets/DejaVuSans.ttf")) // ✓ ✗ ⚠ █ ░ 등 기호 폴백
-        .default_font(iced::Font::with_name("NanumSquare"))
+        // 기본 글자를 Bold 페이스로 — 라이트 테마에서 Regular는 가늘어 흐려 보임
+        .default_font(iced::Font {
+            weight: iced::font::Weight::Bold,
+            ..iced::Font::with_name("NanumSquare")
+        })
         .subscription(subscription)
         .window(iced::window::Settings {
             size: iced::Size::new(780.0, 680.0),
@@ -199,6 +207,7 @@ fn init() -> (App, Task<Message>) {
         usb: UsbState::new(),
         audio: AudioState::new(),
         disk: DiskState::new(),
+        display: DisplayState::new(),
         cosmic: CosmicState::new(),
         apps: AppsState::new(),
         output: String::new(),
@@ -208,6 +217,7 @@ fn init() -> (App, Task<Message>) {
         Task::perform(async { () }, |_| Message::Usb(UsbMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Audio(AudioMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Disk(DiskMsg::Refresh)),
+        Task::perform(async { () }, |_| Message::Display(DisplayMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Cosmic(CosmicMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Apps(AppsMsg::Refresh)),
     ]);
@@ -267,6 +277,11 @@ fn update(app: &mut App, msg: Message) -> Task<Message> {
             if let Some(r) = res { push_log(&mut app.output, r); }
             task.map(Message::Disk)
         }
+        Message::Display(m) => {
+            let (task, res) = app.display.update(m);
+            if let Some(r) = res { push_log(&mut app.output, r); }
+            task.map(Message::Display)
+        }
         Message::Cosmic(m) => {
             let (task, res) = app.cosmic.update(m);
             if let Some(r) = res { push_log(&mut app.output, r); }
@@ -313,6 +328,7 @@ fn view(app: &App) -> Element<'_, Message> {
         Tab::Usb    => app.usb.view().map(Message::Usb),
         Tab::Audio  => app.audio.view().map(Message::Audio),
         Tab::Disk   => app.disk.view().map(Message::Disk),
+        Tab::Display => app.display.view().map(Message::Display),
         Tab::Cosmic => app.cosmic.view().map(Message::Cosmic),
         Tab::Apps   => app.apps.view().map(Message::Apps),
     };
@@ -337,6 +353,7 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
         (Tab::Usb,    "USB",        "USB / 트랙볼"),
         (Tab::Audio,  "오디오",     "입출력 / 마이크"),
         (Tab::Disk,   "디스크",     "외장하드 / 마운트"),
+        (Tab::Display, "디스플레이", "모니터 밝기"),
         (Tab::Cosmic, "COSMIC",     "COSMIC 트윅"),
         (Tab::Apps,   "앱 관리",    "설치 / 제거"),
     ];
