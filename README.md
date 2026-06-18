@@ -102,12 +102,24 @@ sudo cp /usr/bin/cosmic-comp.bak /usr/bin/cosmic-comp
 
 ---
 
+## 커널 알려진 문제
+
+커널 버전별 안정성 문제와 권장 버전은 [`docs/kernel-known-issues.md`](docs/kernel-known-issues.md) 에 기록한다.
+새 커널 업데이트 후 시스템이 불안정해지면 이 문서를 먼저 확인하고 권장 버전으로 롤백한다.
+
+- **현재 권장 커널: `7.0.9-76070009-generic`**
+- 회피: `7.0.11-76070011` — slab shrinker 손상으로 반복 하드 프리즈 (6/12 업그레이드 회귀)
+
 ## 참고
 
 - 한글 IME 설정 가이드: [cosmic-os-korean](https://github.com/Hostingglobal-Tech/cosmic-os-korean)
 - 폰트: NanumSquare (UI) + NanumGothic (한글 폴백)
 
 ## 변경 이력
+
+### 2026-06-18 — 커널 알려진 문제 문서 추가
+- `docs/kernel-known-issues.md` 신설. 커널 `7.0.11-76070011` 의 slab shrinker 손상 반복 프리즈 진단/롤백 절차 기록.
+  - 이유: 6/12 커널 업그레이드(7.0.9→7.0.11) 직후부터 `kswapd0 → shrink_slab` 경로에서 GPF 가 반복 발생해 하드 프리즈. 하드웨어 오류(MCE/EDAC) 없음 → 커널 회귀로 판정. 권장 커널 `7.0.9-76070009` 명시.
 
 ### 2026-06-06 — IME 진단 확장
 - `~/.profile` 등 사용자 셸 init 파일의 IME export 충돌 감지/정리 추가.
