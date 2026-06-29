@@ -65,6 +65,107 @@ fn save_lock(l: &AudioLock) -> std::io::Result<()> {
     std::fs::write(p, serde_json::to_string_pretty(l).unwrap_or_default())
 }
 
+/// 사용자가 수동으로 저장하는 전체 오디오 프로필 (출력+입력+부스트+노이즈억제).
+/// "고정"(AudioLock, 잭 재연결 자동복원)과 달리 명시적 저장/불러오기 용도.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioProfile {
+    pub saved_at: String,
+    pub sink: String,
+    pub sink_desc: String,
+    pub sink_port: Option<String>,
+    pub sink_volume_pct: u32,
+    pub source: String,
+    pub source_desc: String,
+    pub source_port: Option<String>,
+    pub source_volume_pct: u32,
+    pub boost_ctl: String,
+    pub boost_val: u32,
+    pub denoise: bool,
+}
+
+fn profile_path() -> std::path::PathBuf {
+    dirs::config_dir().unwrap_or_else(|| "/tmp".into()).join("popmgr/audio-profile.json")
+}
+
+fn load_profile() -> Option<AudioProfile> {
+    serde_json::from_str(&std::fs::read_to_string(profile_path()).ok()?).ok()
+}
+
+fn save_profile(p: &AudioProfile) -> std::io::Result<()> {
+    let path = profile_path();
+    if let Some(d) = path.parent() { let _ = std::fs::create_dir_all(d); }
+    std::fs::write(path, serde_json::to_string_pretty(p).unwrap_or_default())
+}
+
+/// 가상 장치(노이즈 억제가 만든) 여부 — 프로필엔 실제 하드웨어를 저장한다
+fn is_virtual_dev(name: &str) -> bool {
+    name == "popmgr_denoise" || name.starts_with("echo-cancel")
+}
+
+/// 입력 포트 → amixer 부스트 컨트롤 이름
+fn boost_ctl_for_port(port: &str) -> &'static str {
+    match port {
+        "analog-input-internal-mic" => "Internal Mic Boost",
+        "analog-input-headphone-mic" => "Headphone Mic Boost",
+        "analog-input-headset-mic" => "Headset Mic Boost",
+        _ => "",
+    }
+}
+
+/// 출력 포트까지 포함한 한글 포트 라벨
+fn port_label_any(port: &str) -> String {
+    match port {
+        "analog-output-speaker" => "스피커".to_string(),
+        "analog-output-headphones" | "analog-output-headphone" => "헤드폰".to_string(),
+        _ => port_label_kr(port).to_string(),
+    }
+}
+
+fn profile_summary(p: &AudioProfile) -> String {
+    let sname = if p.sink_desc.is_empty() { p.sink.clone() } else { p.sink_desc.trim().to_string() };
+    let rname = if p.source_desc.is_empty() { p.source.clone() } else { p.source_desc.trim().to_string() };
+    let sport = p.sink_port.as_deref().map(|x| format!(" ({})", port_label_any(x))).unwrap_or_default();
+    let rport = p.source_port.as_deref().map(|x| format!(" ({})", port_label_any(x))).unwrap_or_default();
+    format!(
+        "출력: {sname}{sport} {sv}%\n입력: {rname}{rport} {rv}% · 부스트 +{b}dB · 노이즈억제 {dn}",
+        sv = p.sink_volume_pct, rv = p.source_volume_pct, b = p.boost_val * 10,
+        dn = if p.denoise { "켜짐" } else { "꺼짐" },
+    )
+}
+
+/// 저장된 프로필을 한 번에 적용하는 셸 스크립트 생성
+fn build_load_script(p: &AudioProfile) -> String {
+    let sink_port = p.sink_port.as_deref()
+        .map(|pt| format!("pactl set-sink-port '{}' '{}'; ", p.sink, pt)).unwrap_or_default();
+    let src_port = p.source_port.as_deref()
+        .map(|pt| format!("pactl set-source-port '{}' '{}'; ", p.source, pt)).unwrap_or_default();
+    let boost = if p.boost_ctl.is_empty() { String::new() }
+        else { format!("amixer -c0 sset '{}' {} >/dev/null; ", p.boost_ctl, p.boost_val) };
+    let want = if p.denoise { 1 } else { 0 };
+    format!(
+        "pactl set-default-sink '{sink}'; \
+         pactl list short sink-inputs | cut -f1 | while read -r i; do pactl move-sink-input \"$i\" '{sink}' 2>/dev/null||true; done; \
+         {sink_port}pactl set-sink-volume '{sink}' {svol}%; \
+         {src_port}pactl set-source-volume '{src}' {srcvol}%; {boost}\
+         WANT={want}; CUR=$(pactl list short modules | awk '/module-echo-cancel/{{print $1; exit}}'); \
+         if [ \"$WANT\" = 1 ]; then \
+           if [ -z \"$CUR\" ]; then \
+             pactl set-default-source '{src}'; \
+             pactl load-module module-echo-cancel 'source_name=popmgr_denoise aec_method=webrtc aec_args=\"analog_gain_control=0 digital_gain_control=1 noise_suppression=1\"' >/dev/null; sleep 0.3; \
+           fi; \
+           pactl set-default-source popmgr_denoise; \
+           pactl list short source-outputs | cut -f1 | while read -r i; do pactl move-source-output \"$i\" popmgr_denoise 2>/dev/null||true; done; \
+         else \
+           if [ -n \"$CUR\" ]; then pactl unload-module $CUR; sleep 0.3; fi; \
+           pactl set-default-source '{src}'; \
+           pactl list short source-outputs | cut -f1 | while read -r i; do pactl move-source-output \"$i\" '{src}' 2>/dev/null||true; done; \
+         fi; \
+         echo '오디오 설정 불러옴 (저장 {ts})'",
+        sink = p.sink, src = p.source, svol = p.sink_volume_pct, srcvol = p.source_volume_pct,
+        ts = p.saved_at,
+    )
+}
+
 pub fn port_label_kr(port: &str) -> &str {
     match port {
         "analog-input-internal-mic" => "내부 마이크",
@@ -137,6 +238,9 @@ pub enum AudioMsg {
     ToggleDenoise,
     LockProfile,
     UnlockProfile,
+    SaveProfile,
+    ProfileSaved(AudioProfile, CmdResult),
+    LoadProfile,
     TestMic,
     LoopTest,
     TestDone(MicTest),
@@ -154,6 +258,7 @@ pub struct AudioState {
     pub boosts: Vec<(String, u32)>,
     pub denoise_module: Option<String>,
     pub lock: Option<AudioLock>,
+    pub profile: Option<AudioProfile>,
     enforcing: bool,
     vref_fixing: bool,
     /// 앱 시작 시 고정 설정 1회 전체 적용 (재부팅 후 볼륨/부스트 어긋남 보정)
@@ -182,6 +287,7 @@ impl AudioState {
             boosts: Vec::new(),
             denoise_module: None,
             lock: load_lock(),
+            profile: load_profile(),
             enforcing: false,
             vref_fixing: false,
             startup_enforced: false,
@@ -291,6 +397,35 @@ impl AudioState {
                 });
             }
         }
+    }
+
+    /// 현재 화면의 선택값으로 저장용 프로필 구성.
+    /// 노이즈 억제가 켜진 상태면 기본 장치가 가상 장치이므로 실제 하드웨어로 대체.
+    fn build_profile(&self) -> Option<AudioProfile> {
+        let sink = self.default_sink_dev()
+            .filter(|d| !is_virtual_dev(&d.name))
+            .or_else(|| self.sinks.iter().find(|d| !is_virtual_dev(&d.name)))?;
+        let source = self.default_source_dev()
+            .filter(|d| !is_virtual_dev(&d.name))
+            .or_else(|| self.sources.iter().find(|d| !is_virtual_dev(&d.name)))?;
+        let boost_ctl = source.active_port.as_deref()
+            .map(boost_ctl_for_port).unwrap_or("").to_string();
+        let boost_val = self.boosts.iter()
+            .find(|(n, _)| *n == boost_ctl).map(|(_, v)| *v).unwrap_or(0);
+        Some(AudioProfile {
+            saved_at: String::new(),
+            sink: sink.name.clone(),
+            sink_desc: sink.desc.clone(),
+            sink_port: sink.active_port.clone(),
+            sink_volume_pct: sink.volume_pct.unwrap_or(self.sink_vol),
+            source: source.name.clone(),
+            source_desc: source.desc.clone(),
+            source_port: source.active_port.clone(),
+            source_volume_pct: source.volume_pct.unwrap_or(self.source_vol),
+            boost_ctl,
+            boost_val,
+            denoise: self.denoise_module.is_some(),
+        })
     }
 
     pub fn update(&mut self, msg: AudioMsg) -> (Task<AudioMsg>, Option<CmdResult>) {
@@ -571,6 +706,49 @@ impl AudioState {
                 self.lock = None;
                 (Task::none(), Some(CmdResult { success: true, output: "입력 설정 고정 해제됨".into() }))
             }
+            AudioMsg::SaveProfile => {
+                let Some(profile) = self.build_profile() else {
+                    return (Task::none(), Some(CmdResult {
+                        success: false, output: "저장할 출력/입력 장치를 찾지 못했습니다".into()
+                    }));
+                };
+                // 저장 시각은 시스템 로컬 시간(date)으로 — chrono 의존성 없이.
+                let t = Task::perform(async move {
+                    let ts = runner::run_sh("date '+%Y-%m-%d %H:%M'").await.output.trim().to_string();
+                    let mut p = profile;
+                    p.saved_at = if ts.is_empty() { "?".into() } else { ts };
+                    let res = match save_profile(&p) {
+                        Ok(()) => CmdResult {
+                            success: true,
+                            output: format!("오디오 설정 저장됨 ({})\n{}", p.saved_at, profile_summary(&p)),
+                        },
+                        Err(e) => CmdResult { success: false, output: format!("저장 실패: {e}") },
+                    };
+                    (p, res)
+                }, |(p, res)| AudioMsg::ProfileSaved(p, res));
+                (t, None)
+            }
+            AudioMsg::ProfileSaved(p, res) => {
+                if res.success { self.profile = Some(p); }
+                (Task::none(), Some(res))
+            }
+            AudioMsg::LoadProfile => {
+                let Some(p) = self.profile.clone() else {
+                    return (Task::none(), Some(CmdResult {
+                        success: false, output: "저장된 오디오 설정이 없습니다".into()
+                    }));
+                };
+                if !self.sinks.iter().any(|d| d.name == p.sink)
+                    && !self.sources.iter().any(|d| d.name == p.source)
+                {
+                    return (Task::none(), Some(CmdResult {
+                        success: false,
+                        output: "저장된 장치가 현재 목록에 없습니다 — 장치 연결을 확인하세요".into(),
+                    }));
+                }
+                self.running = Some("저장된 오디오 설정 불러오는 중...".into());
+                (apply(build_load_script(&p), format!("오디오 설정 불러옴 (저장 {})", p.saved_at)), None)
+            }
             AudioMsg::ToggleDenoise => {
                 self.running = Some("노이즈 억제 전환 중...".into());
                 let script = if let Some(id) = &self.denoise_module {
@@ -727,6 +905,10 @@ impl AudioState {
 
         // 입력 설정 고정 (잭 재연결 시 자동 복원)
         col = col.push(lock_card(self.lock.as_ref(), is_running));
+        col = col.push(Space::with_height(8));
+
+        // 오디오 설정 저장 / 불러오기 (출력+입력 전체)
+        col = col.push(profile_card(self.profile.as_ref(), is_running));
         col = col.push(Space::with_height(14));
 
         // 테스트 대상 선택 (어느 입력으로 녹음할지)
@@ -892,6 +1074,42 @@ fn lock_card<'a>(lock: Option<&'a AudioLock>, is_busy: bool) -> Element<'a, Audi
             body = body.push(Space::with_height(4));
             body = body.push(
                 text("핀마이크가 잘 되는 상태에서 누르세요. 포트/볼륨/부스트가 저장됩니다.")
+                    .size(11).color(C_DIM)
+            );
+        }
+    }
+    card(body)
+}
+
+fn profile_card<'a>(profile: Option<&'a AudioProfile>, is_busy: bool) -> Element<'a, AudioMsg> {
+    let mut body = column![
+        text("오디오 설정 저장 / 불러오기").size(13).color(C_TEXT),
+        Space::with_height(6),
+    ];
+    match profile {
+        Some(p) => {
+            body = body.push(
+                row![
+                    container(text(format!("● 저장됨 ({})", p.saved_at)).size(12).color(C_OK))
+                        .width(Length::Fill),
+                    action_btn("불러오기", AudioMsg::LoadProfile, !is_busy, C_BLUE),
+                    Space::with_width(8),
+                    action_btn("덮어쓰기", AudioMsg::SaveProfile, !is_busy, C_BTN2),
+                ].align_y(iced::Alignment::Center)
+            );
+            body = body.push(Space::with_height(6));
+            body = body.push(text(profile_summary(p)).size(11).color(C_DIM));
+        }
+        None => {
+            body = body.push(
+                row![
+                    container(text("○ 저장된 설정 없음").size(12).color(C_DIM)).width(Length::Fill),
+                    action_btn("현재 설정 저장", AudioMsg::SaveProfile, !is_busy, C_BLUE),
+                ].align_y(iced::Alignment::Center)
+            );
+            body = body.push(Space::with_height(4));
+            body = body.push(
+                text("지금의 출력/입력 장치·포트·볼륨·마이크 부스트·노이즈 억제 상태를 저장해 두고, 나중에 '불러오기'로 한 번에 복원합니다.")
                     .size(11).color(C_DIM)
             );
         }
