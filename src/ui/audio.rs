@@ -114,6 +114,9 @@ pub enum MicTest {
 pub enum AudioMsg {
     Refresh,
     Refreshed(AudioScan),
+    /// 사용자가 명시적으로 "장치 다시 읽기"를 누름 — 빈 결과여도 강제 반영 + 상태를 로그에 출력
+    Reload,
+    Reloaded(AudioScan),
     PickSink(Choice),
     PickSinkPort(Choice),
     PickSource(Choice),
@@ -251,47 +254,64 @@ impl AudioState {
         out
     }
 
+    /// 스캔 결과를 상태 필드에 반영.
+    /// force=false: 빈 목록은 무시(자동 새로고침 시 "장치 없음" 깜빡임 방지)
+    /// force=true: 빈 결과여도 그대로 반영(명시적 다시 읽기 — 멈춘 화면 복구)
+    fn absorb_scan(&mut self, s: AudioScan, force: bool) {
+        if force || !s.sinks.is_empty() || self.sinks.is_empty() {
+            self.sinks = s.sinks;
+        }
+        if force || !s.sources.is_empty() || self.sources.is_empty() {
+            self.sources = s.sources;
+        }
+        self.default_sink = s.default_sink;
+        self.default_source = s.default_source;
+        self.jacks = s.jacks;
+        self.vref = s.vref;
+        self.boosts = s.boosts;
+        self.denoise_module = s.denoise_module;
+        self.scanned = true;
+        // 슬라이더 드래그 중에는 자동 새로고침이 값을 덮어쓰지 않도록
+        if !self.sink_dragging {
+            self.sink_vol = self.default_sink_dev().and_then(|d| d.volume_pct).unwrap_or(0);
+        }
+        if !self.source_dragging {
+            self.source_vol = self.default_source_dev().and_then(|d| d.volume_pct).unwrap_or(0);
+        }
+        // 테스트 대상 초기화/검증
+        let valid: Vec<Choice> = self.test_target_choices();
+        match &self.test_target {
+            Some(t) if valid.contains(t) => {}
+            _ => {
+                // 기본: 현재 기본 소스의 활성 포트
+                self.test_target = self.default_source_dev().map(|d| {
+                    let port = d.active_port.as_deref()
+                        .and_then(|ap| d.ports.iter().find(|p| p.name == ap));
+                    test_choice(d, port)
+                });
+            }
+        }
+    }
+
     pub fn update(&mut self, msg: AudioMsg) -> (Task<AudioMsg>, Option<CmdResult>) {
         match msg {
             AudioMsg::Refresh => {
                 let t = Task::perform(async { scan_audio().await }, AudioMsg::Refreshed);
                 (t, None)
             }
+            AudioMsg::Reload => {
+                self.running = Some("장치 다시 읽는 중...".into());
+                (Task::perform(async { scan_audio().await }, AudioMsg::Reloaded), None)
+            }
+            AudioMsg::Reloaded(s) => {
+                self.running = None;
+                let summary = device_state_summary(&s);
+                // 명시적 reload는 빈 결과여도 강제 반영 (멈춘 화면 복구)
+                self.absorb_scan(s, true);
+                (Task::none(), Some(CmdResult { success: true, output: summary }))
+            }
             AudioMsg::Refreshed(s) => {
-                // 일시적 스캔 실패로 빈 목록이 오면 이전 목록 유지 ("장치 없음" 깜빡임 방지)
-                if !s.sinks.is_empty() || self.sinks.is_empty() {
-                    self.sinks = s.sinks;
-                }
-                if !s.sources.is_empty() || self.sources.is_empty() {
-                    self.sources = s.sources;
-                }
-                self.default_sink = s.default_sink;
-                self.default_source = s.default_source;
-                self.jacks = s.jacks;
-                self.vref = s.vref;
-                self.boosts = s.boosts;
-                self.denoise_module = s.denoise_module;
-                self.scanned = true;
-                // 슬라이더 드래그 중에는 자동 새로고침이 값을 덮어쓰지 않도록
-                if !self.sink_dragging {
-                    self.sink_vol = self.default_sink_dev().and_then(|d| d.volume_pct).unwrap_or(0);
-                }
-                if !self.source_dragging {
-                    self.source_vol = self.default_source_dev().and_then(|d| d.volume_pct).unwrap_or(0);
-                }
-                // 테스트 대상 초기화/검증
-                let valid: Vec<Choice> = self.test_target_choices();
-                match &self.test_target {
-                    Some(t) if valid.contains(t) => {}
-                    _ => {
-                        // 기본: 현재 기본 소스의 활성 포트
-                        self.test_target = self.default_source_dev().map(|d| {
-                            let port = d.active_port.as_deref()
-                                .and_then(|ap| d.ports.iter().find(|p| p.name == ap));
-                            test_choice(d, port)
-                        });
-                    }
-                }
+                self.absorb_scan(s, false);
 
                 // 앱 시작 직후 1회: 고정 설정 전체 적용 (재부팅/로그인 후 상태 보정)
                 if !self.startup_enforced {
@@ -733,7 +753,7 @@ impl AudioState {
         let has_recording = matches!(self.last_test, MicTest::Ok { .. } | MicTest::Loop { .. });
         let mut actions = row![
             Space::with_width(Length::Fill),
-            action_btn("새로고침", AudioMsg::Refresh, !is_running, C_BTN2),
+            action_btn("장치 다시 읽기", AudioMsg::Reload, !is_running, C_BTN2),
             Space::with_width(8),
             action_btn("루프 테스트 (비프음)", AudioMsg::LoopTest, !is_running, C_BTN2),
             Space::with_width(8),
@@ -986,6 +1006,54 @@ fn jack_label(name: &str) -> String {
     }
 }
 
+/// 장치 한 줄 요약: "내장 오디오 아날로그 스테레오 [내부 마이크] vol 30% (음소거)"
+fn dev_brief(d: &DeviceInfo) -> String {
+    let name = if d.desc.is_empty() { d.name.clone() } else { d.desc.trim().to_string() };
+    let port = d.active_port.as_deref()
+        .map(|p| format!(" [{}]", port_label_kr(p)))
+        .unwrap_or_default();
+    let vol = d.volume_pct.map(|v| format!(" vol {v}%")).unwrap_or_default();
+    let mute = if d.muted { " (음소거)" } else { "" };
+    format!("{name}{port}{vol}{mute}")
+}
+
+/// "장치 다시 읽기" 시 로그에 출력할 현재 오디오 장치 상태 요약
+fn device_state_summary(s: &AudioScan) -> String {
+    let mut lines = vec![format!(
+        "장치 다시 읽음 — 출력 {}개 / 입력 {}개", s.sinks.len(), s.sources.len()
+    )];
+
+    let find = |list: &[DeviceInfo], def: &Option<String>| -> String {
+        match def {
+            Some(name) => match list.iter().find(|d| &d.name == name) {
+                Some(d) => dev_brief(d),
+                None => format!("{name} (목록에 없음)"),
+            },
+            None => "(설정 안 됨)".into(),
+        }
+    };
+    lines.push(format!("기본 출력: {}", find(&s.sinks, &s.default_sink)));
+    lines.push(format!("기본 입력: {}", find(&s.sources, &s.default_source)));
+
+    if s.sinks.is_empty() && s.sources.is_empty() {
+        lines.push("⚠ pactl가 장치를 반환하지 않음 — PipeWire/PulseAudio 상태를 확인하세요".into());
+    } else {
+        for d in &s.sinks { lines.push(format!("· 출력: {}", dev_brief(d))); }
+        for d in &s.sources { lines.push(format!("· 입력: {}", dev_brief(d))); }
+    }
+
+    if !s.jacks.is_empty() {
+        let j: Vec<String> = s.jacks.iter()
+            .map(|(n, on)| format!("{}={}", jack_label(n), if *on { "꽂힘" } else { "빔" }))
+            .collect();
+        lines.push(format!("잭: {}", j.join(", ")));
+    }
+    if s.denoise_module.is_some() {
+        lines.push("노이즈 억제: 켜짐 (기본 입출력이 가상 장치로 바뀜 — 시스템 사운드 패널엔 '없음'으로 보일 수 있음)".into());
+    }
+    lines.join("\n")
+}
+
 fn device_choice(d: &DeviceInfo) -> Choice {
     let label = if d.desc.is_empty() { d.name.clone() } else { d.desc.clone() };
     Choice { id: d.name.clone(), label }
@@ -1108,32 +1176,51 @@ fn level_bar(peak_pct: f64) -> String {
 }
 
 async fn scan_audio() -> AudioScan {
+    // 한국어 등 비영어 로케일에선 `pactl list`가 필드 라벨을 번역(Name:→이름:)해
+    // 파서가 깨진다. 파싱 대상 명령은 항상 LC_ALL=C로 영어 출력을 강제한다.
     let (sinks_r, sources_r, dsink_r, dsource_r, jacks_r, modules_r) = tokio::join!(
-        runner::run("pactl", &["list", "sinks"]),
-        runner::run("pactl", &["list", "sources"]),
-        runner::run("pactl", &["get-default-sink"]),
-        runner::run("pactl", &["get-default-source"]),
-        runner::run_sh("for d in /proc/asound/card[0-9]*; do amixer -c \"${d##*card}\" contents 2>/dev/null; done"),
-        runner::run("pactl", &["list", "short", "modules"]),
+        runner::run_sh("LC_ALL=C pactl list sinks"),
+        runner::run_sh("LC_ALL=C pactl list sources"),
+        runner::run_sh("LC_ALL=C pactl get-default-sink"),
+        runner::run_sh("LC_ALL=C pactl get-default-source"),
+        runner::run_sh("for d in /proc/asound/card[0-9]*; do LC_ALL=C amixer -c \"${d##*card}\" contents 2>/dev/null; done"),
+        runner::run_sh("LC_ALL=C pactl list short modules"),
     );
-
-    let sinks = parse_devices(&sinks_r.output);
-    let sources = parse_devices(&sources_r.output)
-        .into_iter()
-        .filter(|d| !d.name.ends_with(".monitor"))
-        .collect();
 
     let trim_name = |r: &CmdResult| -> Option<String> {
         if !r.success { return None; }
         let s = r.output.trim().to_string();
         if s.is_empty() { None } else { Some(s) }
     };
+    let default_sink = trim_name(&dsink_r);
+    let default_source = trim_name(&dsource_r);
+
+    let mut sinks = parse_devices(&sinks_r.output);
+    let mut sources: Vec<DeviceInfo> = parse_devices(&sources_r.output)
+        .into_iter()
+        .filter(|d| !d.name.ends_with(".monitor"))
+        .collect();
+
+    // 노이즈 억제 토글·잭 재연결 직후엔 PipeWire가 장치를 재생성하는 찰나에
+    // `pactl list`가 빈 결과를 돌려줄 때가 있다(기본 장치 이름은 캐시로 살아 있음).
+    // 목록만 비고 기본 장치 이름은 있으면 잠깐 기다렸다 한 번 더 읽어 "장치 없음"을 피한다.
+    if sinks.is_empty() && default_sink.is_some() {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        sinks = parse_devices(&runner::run_sh("LC_ALL=C pactl list sinks").await.output);
+    }
+    if sources.is_empty() && default_source.is_some() {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        sources = parse_devices(&runner::run_sh("LC_ALL=C pactl list sources").await.output)
+            .into_iter()
+            .filter(|d| !d.name.ends_with(".monitor"))
+            .collect();
+    }
 
     AudioScan {
         sinks,
         sources,
-        default_sink: trim_name(&dsink_r),
-        default_source: trim_name(&dsource_r),
+        default_sink,
+        default_source,
         jacks: parse_jacks(&jacks_r.output),
         vref: scan_vref(),
         boosts: parse_boosts(&jacks_r.output),
