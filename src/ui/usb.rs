@@ -542,7 +542,7 @@ async fn scan_usb() -> UsbStatus {
     devices.sort_by(|a, b| a.sysfs_name.cmp(&b.sysfs_name));
 
     // 열거 실패 포트
-    let journal = runner::run("bash", &["-c", "journalctl -k -n 200 --no-pager 2>/dev/null"]).await;
+    let journal = runner::run("bash", &["-c", "LC_ALL=C journalctl -k -n 200 --no-pager 2>/dev/null"]).await;
     let mut failed_ports = Vec::new();
     for line in journal.output.lines() {
         if line.contains("unable to enumerate USB device") {

@@ -841,7 +841,7 @@ async fn scan_apps() -> AppsStatus {
 
     // Flatpak
     let flat = runner::run("bash", &["-c",
-        "flatpak list --app --columns=application,version,name 2>/dev/null"
+        "LC_ALL=C flatpak list --app --columns=application,version,name 2>/dev/null"
     ]).await;
     for line in flat.output.lines() {
         let parts: Vec<&str> = line.splitn(3, '\t').collect();

@@ -311,7 +311,9 @@ async fn scan() -> (Vec<Monitor>, Option<SetupReason>) {
         return (monitors, None);
     }
 
-    let det = runner::run_sh("ddcutil detect 2>&1").await;
+    // ko_KR 등 비영어 로케일에서 ddcutil 출력 라벨이 번역되면 parse_displays가
+    // 전부 깨져 모니터를 0개로 읽는다(audio.rs와 동일 부류). 영어 출력 강제.
+    let det = runner::run_sh("LC_ALL=C ddcutil detect 2>&1").await;
     let displays = parse_displays(&det.output);
 
     if displays.is_empty() {
@@ -324,7 +326,7 @@ async fn scan() -> (Vec<Monitor>, Option<SetupReason>) {
 
     for d in displays {
         // 밝기·명암을 한 번에 읽는다.
-        let vcp = runner::run_sh(&format!("ddcutil -d {} getvcp 10 12 2>&1", d.number)).await;
+        let vcp = runner::run_sh(&format!("LC_ALL=C ddcutil -d {} getvcp 10 12 2>&1", d.number)).await;
         let (bright, bmax) = parse_vcp(&vcp.output, 0x10).unwrap_or((50, 100));
         let contrast = parse_vcp(&vcp.output, 0x12);
         let pct = if bmax > 0 { (bright * 100 / bmax).min(100) } else { 50 };
