@@ -25,6 +25,11 @@ pub struct Monitor {
     pub contrast_max: u32,
 }
 
+/// "저전력 모드" 버튼이 적용하는 밝기(%).
+const LOW_POWER_PCT: u32 = 20;
+/// "기본 모드" 버튼이 적용하는 밝기(%).
+const DEFAULT_PCT: u32 = 70;
+
 /// 외부 모니터 제어가 막혀 있을 때의 사유.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SetupReason {
@@ -45,6 +50,8 @@ pub enum DisplayMsg {
     SetupPermissions,
     /// i2c-dev 모듈 재로드 + udev 재트리거 후 재스캔 (재부팅 후 모듈 미로드 대비).
     Reprobe,
+    /// 모든 모니터 밝기를 목표값(%)으로 한 번에 전환 (저전력/기본 모드 버튼).
+    ApplyBrightnessPreset(u32),
     Applied(CmdResult),
     /// 작업 후 곧바로 재스캔이 필요한 경우(권한 설정·재인식).
     AppliedRescan(CmdResult),
@@ -102,6 +109,11 @@ impl DisplayState {
                 self.running = Some("i2c 모듈 재로드 및 모니터 재인식 중... (관리자 인증)".into());
                 (apply_rescan(reprobe_script()), None)
             }
+            DisplayMsg::ApplyBrightnessPreset(target) => {
+                for m in self.monitors.iter_mut() { m.pct = target; }
+                self.running = Some(format!("밝기 프리셋 적용 중... ({target}%)"));
+                (apply(preset_script(&self.monitors)), None)
+            }
             DisplayMsg::Applied(r) => {
                 self.running = None;
                 (Task::none(), Some(r))
@@ -132,6 +144,24 @@ impl DisplayState {
             col = col.push(text("스캔 중...").size(13).color(C_DIM));
             return scrollable(container(col).padding([4, 0])).into();
         }
+
+        let idle_presets = self.running.is_none();
+        col = col.push(
+            card(
+                column![
+                    text("전원 모드").size(14),
+                    Space::with_height(4),
+                    text(format!("버튼 하나로 모든 모니터 밝기를 전환합니다 (저전력 {LOW_POWER_PCT}% / 기본 {DEFAULT_PCT}%).")).size(11).color(C_DIM),
+                    Space::with_height(10),
+                    row![
+                        action_btn("저전력 모드", DisplayMsg::ApplyBrightnessPreset(LOW_POWER_PCT), idle_presets, C_BTN2),
+                        Space::with_width(8),
+                        action_btn("기본 모드", DisplayMsg::ApplyBrightnessPreset(DEFAULT_PCT), idle_presets, C_BLUE),
+                    ],
+                ]
+            )
+        );
+        col = col.push(Space::with_height(10));
 
         for (i, mon) in self.monitors.iter().enumerate() {
             col = col.push(monitor_card(i, mon, self.running.is_some()));
@@ -269,6 +299,11 @@ fn brightness_script(mon: &Monitor) -> String {
             format!("ddcutil -d {display} setvcp 10 {raw} && echo '외부({}) 밝기 {}% 적용'", mon.connector, mon.pct)
         }
     }
+}
+
+/// 모든 모니터에 현재 pct 값을 한 번에 적용하는 스크립트 (저전력/기본 모드 버튼).
+fn preset_script(monitors: &[Monitor]) -> String {
+    monitors.iter().map(brightness_script).collect::<Vec<_>>().join(" ; ")
 }
 
 /// 명암 적용 스크립트 (외부 모니터 전용).

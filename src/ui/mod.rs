@@ -4,4 +4,5 @@ pub mod cosmic_tweaks;
 pub mod disk;
 pub mod display;
 pub mod ime;
+pub mod power;
 pub mod usb;

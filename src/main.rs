@@ -13,6 +13,7 @@ use ui::{
     disk::{DiskMsg, DiskState},
     display::{DisplayMsg, DisplayState},
     ime::{ImeMsg, ImeState},
+    power::{PowerMsg, PowerState},
     usb::{UsbMsg, UsbState},
 };
 use ui::ime::{C_BG, C_BLUE, C_BORDER, C_DIM, C_OK, C_ERR, C_SURFACE, C_TEXT};
@@ -37,7 +38,7 @@ fn app_theme() -> iced::Theme {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Tab { Ime, Usb, Audio, Disk, Display, Cosmic, Apps }
+enum Tab { Ime, Usb, Audio, Disk, Display, Power, Cosmic, Apps }
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -47,6 +48,7 @@ enum Message {
     Audio(AudioMsg),
     Disk(DiskMsg),
     Display(DisplayMsg),
+    Power(PowerMsg),
     Cosmic(CosmicMsg),
     Apps(AppsMsg),
     CopyLog,
@@ -60,6 +62,7 @@ struct App {
     audio: AudioState,
     disk: DiskState,
     display: DisplayState,
+    power: PowerState,
     cosmic: CosmicState,
     apps: AppsState,
     output: String,
@@ -208,6 +211,7 @@ fn init() -> (App, Task<Message>) {
         audio: AudioState::new(),
         disk: DiskState::new(),
         display: DisplayState::new(),
+        power: PowerState::new(),
         cosmic: CosmicState::new(),
         apps: AppsState::new(),
         output: String::new(),
@@ -233,23 +237,30 @@ fn subscription(app: &App) -> Subscription<Message> {
     let ime_watch = iced::time::every(std::time::Duration::from_secs(30))
         .map(|_| Message::Ime(ImeMsg::Watchdog));
 
+    // 예약 절전이 걸려 있으면 탭과 무관하게 항상 돌아야 정확히 발동한다.
+    let power_tick = if app.power.has_schedule() {
+        iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::Power(PowerMsg::Tick))
+    } else {
+        Subscription::none()
+    };
+
     // 오디오/디스크 탭: 장치 상태 자동 새로고침 (꽂으면 바로 반영)
     match app.tab {
         Tab::Audio => {
             let audio = iced::time::every(std::time::Duration::from_secs(2))
                 .map(|_| Message::Audio(AudioMsg::Refresh));
-            Subscription::batch([drain, ime_watch, audio])
+            Subscription::batch([drain, ime_watch, power_tick, audio])
         }
         Tab::Disk => {
             let disk = iced::time::every(std::time::Duration::from_secs(2))
                 .map(|_| Message::Disk(DiskMsg::Refresh));
-            Subscription::batch([drain, ime_watch, disk])
+            Subscription::batch([drain, ime_watch, power_tick, disk])
         }
         // 다른 탭에서도 느린 주기로 오디오 감시 — 고정 설정 자동 복원이 항상 동작하도록
         _ => {
             let audio_slow = iced::time::every(std::time::Duration::from_secs(5))
                 .map(|_| Message::Audio(AudioMsg::Refresh));
-            Subscription::batch([drain, ime_watch, audio_slow])
+            Subscription::batch([drain, ime_watch, power_tick, audio_slow])
         }
     }
 }
@@ -281,6 +292,11 @@ fn update(app: &mut App, msg: Message) -> Task<Message> {
             let (task, res) = app.display.update(m);
             if let Some(r) = res { push_log(&mut app.output, r); }
             task.map(Message::Display)
+        }
+        Message::Power(m) => {
+            let (task, res) = app.power.update(m);
+            if let Some(r) = res { push_log(&mut app.output, r); }
+            task.map(Message::Power)
         }
         Message::Cosmic(m) => {
             let (task, res) = app.cosmic.update(m);
@@ -329,6 +345,7 @@ fn view(app: &App) -> Element<'_, Message> {
         Tab::Audio  => app.audio.view().map(Message::Audio),
         Tab::Disk   => app.disk.view().map(Message::Disk),
         Tab::Display => app.display.view().map(Message::Display),
+        Tab::Power   => app.power.view().map(Message::Power),
         Tab::Cosmic => app.cosmic.view().map(Message::Cosmic),
         Tab::Apps   => app.apps.view().map(Message::Apps),
     };
@@ -354,6 +371,7 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
         (Tab::Audio,  "오디오",     "입출력 / 마이크"),
         (Tab::Disk,   "디스크",     "외장하드 / 마운트"),
         (Tab::Display, "디스플레이", "모니터 밝기"),
+        (Tab::Power,  "전원",       "절전 / 예약"),
         (Tab::Cosmic, "COSMIC",     "COSMIC 트윅"),
         (Tab::Apps,   "앱 관리",    "설치 / 제거"),
     ];
