@@ -38,6 +38,9 @@ pub enum AppsMsg {
     RemoveMarked,
     InstallKakaotalk,
     LaunchKakaotalk,
+    ShowKakaotalk,
+    QuitKakaotalk,
+    ForceKillKakaotalk,
     FixKakaotalkDesktop,
     FixKakaotalkIcon,
     FixKakaotalkIme,
@@ -189,7 +192,7 @@ impl AppsState {
                     echo "=== [6/8] 사용자 런처 (popmgr-ime-fix-v7) ==="
                     cat > "$HOME/.local/bin/kakaotalk" <<'LAUNCHER_EOF'
 #!/bin/bash
-# popmgr-ime-fix-v8 — Bottles KakaoTalk32 + 시스템 IM 자동 감지 + EGL NVIDIA path 명시 + 좀비 메인윈도우 검증
+# popmgr-ime-fix-v10 — Bottles KakaoTalk32 + 시스템 IM 자동 감지 + 소프트웨어 GL(검은 화면 우회) + 트레이 숨김 복원 리페인트
 WIN32_PREFIX="$HOME/.var/app/com.usebottles.bottles/data/bottles/bottles/KakaoTalk32"
 RUNNER="$HOME/.var/app/com.usebottles.bottles/data/bottles/runners/wine-11.10-staging-amd64"
 KAKAO_EXE="$WIN32_PREFIX/drive_c/Program Files/Kakao/KakaoTalk/KakaoTalk.exe"
@@ -199,17 +202,17 @@ KAKAO_EXE="$WIN32_PREFIX/drive_c/Program Files/Kakao/KakaoTalk/KakaoTalk.exe"
 if pgrep -f "KakaoTalk\.exe" >/dev/null 2>&1; then
     main_wid=""
     if command -v xdotool >/dev/null; then
-        for w in $(xdotool search --class "kakaotalk\.exe" 2>/dev/null); do
-            width=$(xdotool getwindowgeometry --shell "$w" 2>/dev/null | grep ^WIDTH | cut -d= -f2)
-            [ -n "$width" ] && [ "$width" -gt 100 ] 2>/dev/null && { main_wid="$w"; break; }
-        done
-        [ -z "$main_wid" ] && for w in $(xdotool search --name "^KakaoTalk$" 2>/dev/null); do
+        # 메인 윈도우는 이름이 정확히 "KakaoTalk" — 클래스 매칭은 채팅창을 메인으로 오인함
+        for w in $(xdotool search --name "^KakaoTalk$" 2>/dev/null); do
             width=$(xdotool getwindowgeometry --shell "$w" 2>/dev/null | grep ^WIDTH | cut -d= -f2)
             [ -n "$width" ] && [ "$width" -gt 100 ] 2>/dev/null && { main_wid="$w"; break; }
         done
     fi
     if [ -n "$main_wid" ]; then
         xdotool windowmap "$main_wid" 2>/dev/null
+        # Wine은 트레이 숨김 창을 map만 하면 검은 창으로 뜸 — 최소화→복원으로 전체 리페인트 강제
+        xdotool windowminimize "$main_wid" 2>/dev/null
+        sleep 0.7
         xdotool windowactivate "$main_wid" 2>/dev/null
         xdotool windowraise "$main_wid" 2>/dev/null
         exit 0
@@ -248,6 +251,22 @@ done
 
 xsetroot -cursor_name left_ptr 2>/dev/null
 
+# 첫 표시 검은 창 방지 — 창이 나타나면 한 번 최소화→복원해 리페인트
+(
+    for _ in $(seq 1 60); do
+        sleep 2
+        w=$(xdotool search --name "^KakaoTalk$" 2>/dev/null | head -1)
+        [ -n "$w" ] || continue
+        xwininfo -id "$w" 2>/dev/null | grep -q IsViewable || continue
+        sleep 1
+        xdotool windowminimize "$w" 2>/dev/null
+        sleep 0.7
+        xdotool windowactivate "$w" 2>/dev/null
+        xdotool windowraise "$w" 2>/dev/null
+        break
+    done
+) >/dev/null 2>&1 &
+
 exec flatpak run \
     --env=DISPLAY="$DISPLAY" \
     --env=XMODIFIERS="${XMODIFIERS:-@im=$SYS_IM}" \
@@ -256,7 +275,9 @@ exec flatpak run \
     --env=LANG="${LANG:-ko_KR.UTF-8}" \
     --env=LC_ALL="${LC_ALL:-ko_KR.UTF-8}" \
     --env=__EGL_VENDOR_LIBRARY_DIRS="/usr/lib/x86_64-linux-gnu/GL/glvnd/egl_vendor.d:/app/lib/i386-linux-gnu/GL/glvnd/egl_vendor.d:/usr/lib/x86_64-linux-gnu/GL/default/glvnd/egl_vendor.d" \
-    --env=__GLX_VENDOR_LIBRARY_NAME="${__GLX_VENDOR_LIBRARY_NAME:-nvidia}" \
+    --env=__GLX_VENDOR_LIBRARY_NAME="${__GLX_VENDOR_LIBRARY_NAME:-mesa}" \
+    --env=LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}" \
+    --env=MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}" \
     --command=bash com.usebottles.bottles -c "
 export WINEPREFIX='$WIN32_PREFIX'
 export WINEARCH=win32
@@ -450,8 +471,9 @@ EOF
                 // 2) setsid + nohup으로 popmgr 세션과 완전 분리
                 let script = r#"
                     # 좀비 카카오톡 잔여물 정리 (UI 없이 뒤에 살아있는 경우 차단)
-                    pkill -9 -f "KakaoTalk\\.exe" 2>/dev/null
-                    pkill -9 -f "winedbg" 2>/dev/null
+                    # [.]/[w] 패턴: bash -c cmdline 자기매칭 방지
+                    pkill -9 -f "KakaoTalk[.]exe" 2>/dev/null
+                    pkill -9 -f "[w]inedbg" 2>/dev/null
                     # 같은 prefix의 wineserver만 정리 (KakaoTalk32 prefix)
                     for pid in $(pgrep -f "wineserver"); do
                         envdir="/proc/$pid/environ"
@@ -467,6 +489,85 @@ EOF
                     async move { runner::run_sh(script).await },
                     AppsMsg::Done,
                 );
+                (t, None)
+            }
+            AppsMsg::ShowKakaotalk => {
+                self.running = Some("카카오톡 창 불러오는 중...".into());
+                // X 버튼은 종료가 아니라 트레이 숨김인데 COSMIC은 Wine 트레이를 못 보여줌.
+                // 숨겨진(unmap) 메인 윈도우를 xdotool로 다시 매핑·활성화한다.
+                // 실행 중이 아니면 런처를 새로 띄운다 (런처 자체에 활성화/좀비청소 로직 있음).
+                let script = r#"
+                    if pgrep -f "KakaoTalk[.]exe" >/dev/null 2>&1; then
+                        main_wid=""
+                        for w in $(xdotool search --name "^KakaoTalk$" 2>/dev/null); do
+                            width=$(xdotool getwindowgeometry --shell "$w" 2>/dev/null | grep ^WIDTH | cut -d= -f2)
+                            [ -n "$width" ] && [ "$width" -gt 100 ] 2>/dev/null && { main_wid="$w"; break; }
+                        done
+                        if [ -n "$main_wid" ]; then
+                            xdotool windowmap "$main_wid" 2>/dev/null
+                            # map만 하면 Wine이 리페인트를 안 해 검은 창 — 최소화→복원으로 강제
+                            xdotool windowminimize "$main_wid" 2>/dev/null
+                            sleep 0.7
+                            xdotool windowactivate "$main_wid" 2>/dev/null
+                            xdotool windowraise "$main_wid" 2>/dev/null
+                            echo "숨겨져 있던 카카오톡 창을 다시 표시했습니다."
+                            exit 0
+                        fi
+                    fi
+                    setsid -f nohup kakaotalk </dev/null >/dev/null 2>&1 \
+                        || (nohup kakaotalk </dev/null >/dev/null 2>&1 & disown)
+                    echo "카카오톡 실행 요청 완료"
+                "#;
+                let t = Task::perform(async move { runner::run_sh(script).await }, AppsMsg::Done);
+                (t, None)
+            }
+            AppsMsg::QuitKakaotalk => {
+                self.running = Some("카카오톡 완전 종료 중...".into());
+                // TERM으로 정상 종료 유도 후 남으면 KILL. 같은 prefix의 wineserver까지 정리.
+                let script = r#"
+                    # 패턴에 [.]/[w]를 쓰는 이유: bash -c 로 실행되면 스크립트 본문이 cmdline에 남아
+                    # 평범한 패턴은 pkill이 자기 자신을 죽임(자기매칭)
+                    if ! pgrep -f "KakaoTalk[.]exe" >/dev/null 2>&1; then
+                        echo "카카오톡이 실행 중이 아닙니다."
+                    else
+                        pkill -f "KakaoTalk[.]exe" 2>/dev/null
+                        sleep 2
+                        pgrep -f "KakaoTalk[.]exe" >/dev/null 2>&1 && pkill -9 -f "KakaoTalk[.]exe" 2>/dev/null
+                        echo "카카오톡 종료 완료"
+                    fi
+                    pkill -9 -f "[w]inedbg" 2>/dev/null
+                    for pid in $(pgrep -f wineserver 2>/dev/null); do
+                        [ -r "/proc/$pid/environ" ] && grep -qz "KakaoTalk32" "/proc/$pid/environ" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+                    done
+                    exit 0
+                "#;
+                let t = Task::perform(async move { runner::run_sh(script).await }, AppsMsg::Done);
+                (t, None)
+            }
+            AppsMsg::ForceKillKakaotalk => {
+                self.running = Some("카카오톡 강제 kill 중...".into());
+                // 정상 종료를 기다리지 않고 KakaoTalk32 prefix 관련 프로세스를 즉시 SIGKILL.
+                let script = r#"
+                    killed=0
+                    if pgrep -f "KakaoTalk[.]exe" >/dev/null 2>&1; then
+                        pkill -9 -f "KakaoTalk[.]exe" 2>/dev/null || true
+                        killed=1
+                    fi
+                    pkill -9 -f "[w]inedbg" 2>/dev/null || true
+                    for pid in $(pgrep -f wineserver 2>/dev/null); do
+                        if [ -r "/proc/$pid/environ" ] && grep -qz "KakaoTalk32" "/proc/$pid/environ" 2>/dev/null; then
+                            kill -9 "$pid" 2>/dev/null || true
+                            killed=1
+                        fi
+                    done
+                    if [ "$killed" -eq 1 ]; then
+                        echo "카카오톡 관련 프로세스를 강제 종료했습니다."
+                    else
+                        echo "강제 종료할 카카오톡 프로세스가 없습니다."
+                    fi
+                    exit 0
+                "#;
+                let t = Task::perform(async move { runner::run_sh(script).await }, AppsMsg::Done);
                 (t, None)
             }
             AppsMsg::FixKakaotalkDesktop => {
@@ -743,6 +844,11 @@ fn kakaotalk_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'stati
         let ime_state = if ime_patched { "● 한글 입력 안정화 적용됨 (popmgr-ime-fix-v1)" } else { "※ 한글 입력 가끔 안 됨 — IME 안정화 미적용" };
         let ime_c = if ime_patched { C_DIM } else { C_WARN };
         left = left.push(text(ime_state).size(11).color(ime_c));
+        left = left.push(Space::with_height(4));
+        left = left.push(
+            text("X 버튼은 종료가 아니라 트레이 숨김입니다 (COSMIC엔 Wine 트레이가 안 보임). 창이 사라졌으면 '창 보이기', 끝내려면 '완전 종료'.")
+                .size(10).color(C_DIM),
+        );
     }
 
     let mut right = column![].spacing(6).align_x(iced::Alignment::End);
@@ -757,6 +863,11 @@ fn kakaotalk_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'stati
         "카카오톡 재설치"
     };
     right = right.push(action_btn(label, AppsMsg::InstallKakaotalk, !disabled, C_OK));
+    if installed {
+        right = right.push(action_btn("창 보이기", AppsMsg::ShowKakaotalk, !disabled, C_BLUE));
+        right = right.push(action_btn("완전 종료", AppsMsg::QuitKakaotalk, !disabled, C_ERR));
+        right = right.push(action_btn("강제 kill", AppsMsg::ForceKillKakaotalk, !disabled, C_ERR));
+    }
     if all_ok {
         right = right.push(text("● 모든 설정 완료").size(11).color(C_OK));
     }
