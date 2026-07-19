@@ -33,6 +33,7 @@ Pop!_OS / COSMIC 데스크톱 관리 도구 — Rust + [Iced](https://github.com
 - ktrackball 데몬 상태 표시 / 재시작
 - 개별 장치 재인식 / 전체 USB 재인식
 - xHCI 컨트롤러 리셋 (확인 다이얼로그 포함)
+- Kensington 트랙볼의 Bluetooth/USB 전환 기능을 추가할 때는 [`docs/bluetooth-usb-trackball-notes.md`](docs/bluetooth-usb-trackball-notes.md) 참고
 
 ### 디스플레이 탭
 - 내장·외부 모니터 **밝기 조절** (외부는 명암까지)
@@ -121,6 +122,7 @@ sudo cp /usr/bin/cosmic-comp.bak /usr/bin/cosmic-comp
 ## 참고
 
 - 한글 IME 설정 가이드: [cosmic-os-korean](https://github.com/Hostingglobal-Tech/cosmic-os-korean)
+- Kensington 트랙볼 Bluetooth/USB 조사 노트: [`docs/bluetooth-usb-trackball-notes.md`](docs/bluetooth-usb-trackball-notes.md)
 - 폰트: NanumSquare (UI) + NanumGothic (한글 폴백)
 
 ## 변경 이력
