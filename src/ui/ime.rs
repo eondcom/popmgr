@@ -488,15 +488,29 @@ async fn scan_shell_init_conflicts(active: &ImeKind) -> Vec<ShellInitConflict> {
 
 const RESUME_HOOK_PATH: &str = "/etc/systemd/system-sleep/zz-popmgr-ime-restart";
 
+// v2 변경점 (v1은 DISPLAY=:0 하드코딩 + WAYLAND_DISPLAY/DBUS 미설정이라
+// 세션이 :1/wayland-1 인 머신에서는 재시작된 데몬이 세션에 연결되지 못했음):
+//  - 재시작 대상 데몬의 /proc/PID/environ 에서 실제 세션 env를 읽고,
+//    소켓 존재 확인으로 검증 후 실패 시 소켓 탐색으로 폴백.
+//  - systemd-sleep 훅은 완료까지 resume을 블록하므로 setsid로 완전 분리 후
+//    백그라운드에서 1초 대기(컴포지터 안정화) 후 재시작.
 const RESUME_HOOK_SCRIPT: &str = r#"#!/bin/sh
-# popmgr-resume-ime-hook: v1
+# popmgr-resume-ime-hook: v2
 # Restart active IME daemon after wake to recover Korean input.
+# Discovers the real session env (WAYLAND_DISPLAY / DISPLAY / DBUS) at run
+# time from the running daemon's /proc environ + socket probing, instead of
+# hardcoding DISPLAY=:0 (v1 bug: broke whenever the session was :1/wayland-1).
 
 [ "$1" = "post" ] || exit 0
 case "$2" in
   suspend|hibernate|hybrid-sleep|suspend-then-hibernate) ;;
   *) exit 0 ;;
 esac
+
+# proc_env <pid> <VAR>: read one variable from a process's environment
+proc_env() {
+  tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | sed -n "s/^$2=//p" | head -n 1
+}
 
 for d in /run/user/[0-9]*; do
   uid="${d##*/}"
@@ -505,21 +519,62 @@ for d in /run/user/[0-9]*; do
   [ -n "$user" ] || continue
 
   for daemon in fcitx5 ibus-daemon kime; do
-    pgrep -x -u "$uid" "$daemon" >/dev/null 2>&1 || continue
+    pid="$(pgrep -x -o -u "$uid" "$daemon" 2>/dev/null)" || continue
     case "$daemon" in
       fcitx5)      cmd="fcitx5 -d --replace" ;;
       ibus-daemon) cmd="ibus-daemon -drxR" ;;
       kime)        cmd="pkill -x kime; sleep 0.2; setsid kime" ;;
     esac
-    runuser -u "$user" -- env DISPLAY=:0 XDG_RUNTIME_DIR="/run/user/$uid" \
-      sh -c "$cmd </dev/null >/dev/null 2>&1 &"
+
+    # WAYLAND_DISPLAY: daemon env 우선, 소켓 검증 실패 시 런타임 디렉토리 탐색
+    # (wayland-1-renderD128 같은 부속 소켓/락파일은 제외)
+    wl="$(proc_env "$pid" WAYLAND_DISPLAY)"
+    if [ -n "$wl" ] && [ ! -S "$d/$wl" ]; then wl=""; fi
+    if [ -z "$wl" ]; then
+      for s in "$d"/wayland-*; do
+        n="${s##*/}"
+        case "$n" in wayland-*[!0-9]*) continue ;; esac
+        if [ -S "$s" ]; then wl="$n"; break; fi
+      done
+    fi
+
+    # DISPLAY: daemon env 우선, X 소켓 검증 실패 시 /tmp/.X11-unix 탐색
+    disp="$(proc_env "$pid" DISPLAY)"
+    case "$disp" in
+      :*) num="${disp#:}"; num="${num%%.*}"
+          [ -S "/tmp/.X11-unix/X$num" ] || disp="" ;;
+      *)  disp="" ;;
+    esac
+    if [ -z "$disp" ]; then
+      for x in /tmp/.X11-unix/X[0-9]*; do
+        if [ -S "$x" ]; then disp=":${x##*/X}"; break; fi
+      done
+    fi
+
+    # D-Bus 세션 버스: daemon env 우선, 없으면 XDG 표준 사용자 버스 소켓
+    dbus="$(proc_env "$pid" DBUS_SESSION_BUS_ADDRESS)"
+    if [ -z "$dbus" ] && [ -S "$d/bus" ]; then dbus="unix:path=$d/bus"; fi
+
+    set -- XDG_RUNTIME_DIR="$d"
+    [ -n "$wl" ]   && set -- "$@" WAYLAND_DISPLAY="$wl"
+    [ -n "$disp" ] && set -- "$@" DISPLAY="$disp"
+    [ -n "$dbus" ] && set -- "$@" DBUS_SESSION_BUS_ADDRESS="$dbus"
+
+    # setsid로 완전 분리 + 1초 대기 후 재시작: systemd는 모든 훅이 끝나야
+    # resume을 완료하므로 훅 자체는 즉시 반환해야 한다.
+    runuser -u "$user" -- env "$@" \
+      sh -c "setsid sh -c 'sleep 1; $cmd' </dev/null >/dev/null 2>&1 &"
     break
   done
 done
 "#;
 
 fn detect_resume_hook() -> bool {
-    std::path::Path::new(RESUME_HOOK_PATH).exists()
+    // 현재 버전 마커까지 일치해야 "설치됨"으로 본다.
+    // 구버전(v1: DISPLAY=:0 하드코딩)은 미설치로 표시해 재설치를 유도.
+    std::fs::read_to_string(RESUME_HOOK_PATH)
+        .map(|c| c.contains("# popmgr-resume-ime-hook: v2"))
+        .unwrap_or(false)
 }
 
 async fn install_resume_hook() -> CmdResult {
