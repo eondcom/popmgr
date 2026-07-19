@@ -31,6 +31,7 @@ pub enum DiskMsg {
     Mount(String),
     Unmount(String),
     PowerOff(String),
+    Reconnect,
     Open(String),
     Applied(CmdResult),
 }
@@ -69,8 +70,12 @@ impl DiskState {
             }
             DiskMsg::PowerOff(dev) => {
                 self.running = Some(format!("{dev} 안전 제거 중..."));
-                let script = format!("udisksctl power-off -b '{dev}' 2>&1 && echo '{dev} 안전 제거 완료 — 케이블을 뽑아도 됩니다.'");
+                let script = format!("udisksctl power-off -b '{dev}' 2>&1 && echo '{dev} 안전 제거 완료 — 케이블을 뽑아도 됩니다. 다시 쓰려면 [다시 연결]을 누르세요.'");
                 (apply(script), None)
+            }
+            DiskMsg::Reconnect => {
+                self.running = Some("연결 안 된 USB 포트 전원 재투입 중... (관리자 인증)".into());
+                (apply(reconnect_script()), None)
             }
             DiskMsg::Open(mp) => {
                 let script = format!("nohup xdg-open '{mp}' >/dev/null 2>&1 & echo '파일 관리자로 열기: {mp}'");
@@ -111,9 +116,12 @@ impl DiskState {
         col = col.push(text("외장 디스크").size(14).color(C_DIM));
         col = col.push(Space::with_height(8));
         if external.is_empty() {
-            col = col.push(card(
-                text("연결된 외장 디스크 없음").size(12).color(C_DIM)
-            ));
+            col = col.push(card(column![
+                text("연결된 외장 디스크 없음").size(12).color(C_DIM),
+                Space::with_height(4),
+                text("케이블은 꽂혀 있는데 안 보이면(안전 제거 후 등) '다시 연결'을 누르세요 — USB 포트 전원을 다시 켭니다.")
+                    .size(10).color(C_DIM),
+            ]));
         } else {
             for d in &external {
                 col = col.push(disk_card(d, is_busy, true));
@@ -139,6 +147,8 @@ impl DiskState {
         col = col.push(Space::with_height(8));
         let actions = row![
             Space::with_width(Length::Fill),
+            action_btn("다시 연결", DiskMsg::Reconnect, !is_busy, C_WARN),
+            Space::with_width(6),
             action_btn("새로고침", DiskMsg::Refresh, !is_busy, C_BTN2),
         ];
         col = col.push(actions);
@@ -249,6 +259,26 @@ fn disk_card<'a>(d: &'a DiskGroup, is_busy: bool, external: bool) -> Element<'a,
 
 fn apply(script: String) -> Task<DiskMsg> {
     Task::perform(async move { runner::run_sh(&script).await }, DiskMsg::Applied)
+}
+
+/// 안전 제거(power-off)됐거나 열거 실패로 안 보이는 USB 디스크를 되살린다.
+/// 장치가 붙어 있지 않은 허브 포트만 골라 전원을 껐다 켠다(disable 1→0).
+/// device 링크가 있는 포트(키보드·마우스 등 정상 장치)는 건드리지 않는다.
+fn reconnect_script() -> String {
+    "pkexec bash -c '\
+        ports=\"\"; \
+        for port in /sys/bus/usb/devices/*/*:*/*-port*; do \
+            [ -f \"$port/disable\" ] || continue; \
+            [ -e \"$port/device\" ] && continue; \
+            echo 1 > \"$port/disable\" 2>/dev/null && ports=\"$ports $port\"; \
+        done; \
+        [ -n \"$ports\" ] || { echo \"전원을 재투입할 포트가 없습니다.\"; exit 0; }; \
+        sleep 1; \
+        for port in $ports; do echo 0 > \"$port/disable\" 2>/dev/null || true; done; \
+        sleep 3; \
+        udevadm settle 2>/dev/null || true; \
+        echo \"USB 포트 전원 재투입 완료 — 디스크가 목록에 나타나는지 확인하세요.\"\
+    '".to_string()
 }
 
 async fn scan_disks() -> Vec<DiskGroup> {
