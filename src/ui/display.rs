@@ -43,10 +43,11 @@ pub struct TouchDevice {
     pub external: bool,
 }
 
-/// "저전력 모드" 버튼이 적용하는 밝기(%).
-const LOW_POWER_PCT: u32 = 20;
+/// "저전력 모드" 버튼이 적용하는 밝기(%). 어두운 방에서 화면이 켜져 있는지만
+/// 확인할 수 있으면 되는 용도라 낮게 잡는다.
+const LOW_POWER_PCT: u32 = 10;
 /// "기본 모드" 버튼이 적용하는 밝기(%).
-const DEFAULT_PCT: u32 = 70;
+const DEFAULT_PCT: u32 = 50;
 
 /// 외부 모니터 제어가 막혀 있을 때의 사유.
 #[derive(Debug, Clone, PartialEq)]
