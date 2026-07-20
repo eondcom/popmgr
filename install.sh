@@ -37,8 +37,16 @@ echo "  -> $BIN_DIR/popmgr"
 echo ""
 echo "[3/5] 아이콘 및 앱 런처 등록..."
 mkdir -p "$APP_DIR"
-cp "$REPO_DIR/popmgr.desktop" "$APP_DIR/popmgr.desktop"
-echo "  -> $APP_DIR/popmgr.desktop"
+DESKTOP_ID="com.eondcom.Popmgr.desktop"
+cp "$REPO_DIR/$DESKTOP_ID" "$APP_DIR/$DESKTOP_ID"
+echo "  -> $APP_DIR/$DESKTOP_ID"
+
+# 구버전은 popmgr.desktop 으로 설치돼 앱 런처에 항목이 중복으로 뜬다.
+# StartupWMClass 도 실제 app id(com.eondcom.Popmgr)와 달라 창이 독 아이콘에 붙지 않았다.
+if [ -f "$APP_DIR/popmgr.desktop" ]; then
+    rm -f "$APP_DIR/popmgr.desktop"
+    echo "  -> 구버전 중복 항목 제거: $APP_DIR/popmgr.desktop"
+fi
 
 for SIZE in 16 32 48 64 128 256; do
     ICON_DIR="$HOME/.local/share/icons/hicolor/${SIZE}x${SIZE}/apps"
