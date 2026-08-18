@@ -416,12 +416,17 @@ mod tests {
         let original = "[Desktop Entry]\nExec=libreoffice --writer %U\n[Desktop Action New]\nExec=libreoffice --writer\n";
         let patched = patch_libreoffice_desktop(original);
         assert!(patched.starts_with(LO_COMPAT_MARKER));
-        assert_eq!(patched.matches("Exec=env GDK_BACKEND=x11 libreoffice").count(), 2);
+        assert_eq!(
+            patched.matches(
+                "Exec=env -u WAYLAND_DISPLAY GDK_BACKEND=x11 GTK_IM_MODULE=xim libreoffice"
+            ).count(),
+            2,
+        );
     }
 
     #[test]
     fn libreoffice_desktop_patch_does_not_double_prefix() {
-        let original = "Exec=env GDK_BACKEND=x11 libreoffice --writer %U\n";
+        let original = "Exec=env -u WAYLAND_DISPLAY GDK_BACKEND=x11 GTK_IM_MODULE=xim libreoffice --writer %U\n";
         let patched = patch_libreoffice_desktop(original);
         assert_eq!(patched.matches("GDK_BACKEND=x11").count(), 1);
     }
@@ -718,8 +723,12 @@ fn detect_snap_im_leak() -> Option<String> {
 // COSMIC Wayland에서 LibreOffice(GTK3)가 GTK_IM_MODULE=fcitx를 상속하고도
 // im-fcitx5.so를 로드하지 않는 경우가 있다. 시스템 desktop 파일을 수정하면
 // 패키지 업데이트에 덮어써지므로, 같은 desktop ID의 사용자 사본에서만
-// GDK_BACKEND=x11을 강제한다. X11에서는 기존 GTK IM 모듈 경로를 사용한다.
-const LO_COMPAT_MARKER: &str = "# popmgr-libreoffice-ime-compat: v1";
+// WAYLAND_DISPLAY를 제거해 X11을 확실히 선택하고 GTK의 XIM 경로를 사용한다.
+// GDK_BACKEND=x11만 지정하면 COSMIC에서 여전히 gdk-wayland로 뜨는 경우가 있다.
+const LO_COMPAT_MARKER_PREFIX: &str = "# popmgr-libreoffice-ime-compat:";
+const LO_COMPAT_MARKER: &str = "# popmgr-libreoffice-ime-compat: v2";
+const LO_COMPAT_EXEC_PREFIX: &str =
+    "env -u WAYLAND_DISPLAY GDK_BACKEND=x11 GTK_IM_MODULE=xim ";
 const LO_DESKTOP_NAMES: &[&str] = &[
     "libreoffice-startcenter.desktop",
     "libreoffice-writer.desktop",
@@ -739,6 +748,10 @@ fn detect_libreoffice_compat() -> bool {
     std::fs::read_to_string(path)
         .map(|c| c.lines().any(|line| line == LO_COMPAT_MARKER))
         .unwrap_or(false)
+}
+
+fn is_popmgr_libreoffice_desktop(content: &str) -> bool {
+    content.lines().any(|line| line.starts_with(LO_COMPAT_MARKER_PREFIX))
 }
 
 fn detect_running_libreoffice_ime() -> (bool, bool) {
@@ -766,10 +779,11 @@ fn patch_libreoffice_desktop(original: &str) -> String {
     out.push('\n');
     for line in original.lines() {
         if let Some(command) = line.strip_prefix("Exec=") {
-            if command.starts_with("env GDK_BACKEND=x11 ") {
+            if command.starts_with(LO_COMPAT_EXEC_PREFIX) {
                 out.push_str(line);
             } else {
-                out.push_str("Exec=env GDK_BACKEND=x11 ");
+                out.push_str("Exec=");
+                out.push_str(LO_COMPAT_EXEC_PREFIX);
                 out.push_str(command);
             }
         } else {
@@ -792,7 +806,7 @@ async fn install_libreoffice_compat() -> CmdResult {
         let source = std::path::Path::new("/usr/share/applications").join(name);
         let target = user_dir.join(name);
         if let Ok(existing) = tokio::fs::read_to_string(&target).await {
-            if !existing.lines().any(|line| line == LO_COMPAT_MARKER) {
+            if !is_popmgr_libreoffice_desktop(&existing) {
                 skipped.push(format!("{name} (기존 사용자 설정 보존)"));
                 continue;
             }
@@ -835,7 +849,7 @@ async fn uninstall_libreoffice_compat() -> CmdResult {
     for name in LO_DESKTOP_NAMES {
         let target = user_dir.join(name);
         let Ok(existing) = tokio::fs::read_to_string(&target).await else { continue };
-        if !existing.lines().any(|line| line == LO_COMPAT_MARKER) { continue; }
+        if !is_popmgr_libreoffice_desktop(&existing) { continue; }
         match tokio::fs::remove_file(&target).await {
             Ok(_) => removed += 1,
             Err(e) => failures.push(format!("{name}: {e}")),
@@ -1253,7 +1267,7 @@ fn libreoffice_ime_card(st: &ImeStatus, disabled: bool) -> Element<'static, ImeM
         (
             "[OK] LibreOffice 한글 입력 호환 모드 설치됨",
             C_OK,
-            "LibreOffice를 X11/GTK 입력 경로로 실행합니다. 해제하면 기본 Wayland 실행 방식으로 돌아갑니다.",
+            "LibreOffice를 X11/XIM 입력 경로로 실행합니다. 해제하면 기본 Wayland 실행 방식으로 돌아갑니다.",
             "호환 모드 해제",
             ImeMsg::UninstallLibreOfficeCompat,
             C_DIM,
@@ -1262,7 +1276,7 @@ fn libreoffice_ime_card(st: &ImeStatus, disabled: bool) -> Element<'static, ImeM
         (
             "[!] LibreOffice가 fcitx 입력 모듈을 연결하지 못함",
             C_ERR,
-            "현재 LibreOffice는 Wayland로 실행됐지만 im-fcitx5.so가 로드되지 않았습니다. X11 호환 모드로 실행하면 한/영 전환이 GTK fcitx 모듈을 통과합니다.",
+            "현재 LibreOffice는 Wayland로 실행됐지만 fcitx 입력 컨텍스트를 만들지 못했습니다. X11/XIM 호환 모드는 Wayland를 우회해 fcitx XIM 서버에 직접 연결합니다.",
             "한글 입력 호환 모드 설치",
             ImeMsg::InstallLibreOfficeCompat,
             C_BLUE,

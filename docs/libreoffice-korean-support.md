@@ -137,13 +137,16 @@ grep -E 'im-fcitx5|libgtk-3|libwayland' "/proc/$pid/maps"
 fcitx5 데몬, Hangul 엔진, GTK3 모듈 캐시는 모두 정상이므로 LibreOffice의 native Wayland
 입력 경로 문제로 좁혀진다.
 
-즉시 우회는 LibreOffice를 X11 GTK 경로로 실행하는 것이다.
+`GDK_BACKEND=x11`만 지정하면 COSMIC에서 LibreOffice가 계속 gdk-wayland 소켓을 사용하는 것이
+확인됐다. `WAYLAND_DISPLAY`를 환경에서 제거하고 GTK의 XIM 모듈을 선택해야 fcitx5에
+`program:soffice.bin frontend:xim` 입력 컨텍스트가 생성된다.
 
 ```bash
-GDK_BACKEND=x11 libreoffice --writer
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 GTK_IM_MODULE=xim libreoffice --writer
 ```
 
 popmgr IME 탭의 **LibreOffice 한글 입력 호환 모드**는 `/usr/share/applications`의 시스템 파일을
 수정하지 않는다. 대신 같은 desktop ID의 사용자 사본을 `~/.local/share/applications`에 만들고
-모든 `Exec=`에 `env GDK_BACKEND=x11`을 붙인다. 해제 시 popmgr 마커가 있는 사본만 삭제한다.
+모든 `Exec=`에 `env -u WAYLAND_DISPLAY GDK_BACKEND=x11 GTK_IM_MODULE=xim`을 붙인다.
+해제 시 popmgr 마커가 있는 사본만 삭제한다.
 설치 또는 해제 후에는 열려 있는 LibreOffice를 모두 닫고 다시 실행해야 한다.
