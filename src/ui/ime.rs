@@ -130,11 +130,16 @@ impl ImeState {
                 if let Some(ref active) = s.active {
                     self.selected = active.clone();
                 }
-                // 시작 시 1회: 실행 중인 데몬은 재연결, 죽어 있으면 활성 IME를 자동 기동
+                // 시작 시 1회: 데몬이 죽어 있을 때만 활성 IME를 자동 기동한다.
+                // 실행 중인 데몬을 재시작하면 기존 X11/XIM 클라이언트(ChatGPT 등)의
+                // 입력 컨텍스트가 끊겨 재실행 전까지 한/영 전환이 멈출 수 있다.
                 let reconnect_task = if !self.auto_reconnected {
-                    let kind_opt = s.daemon_running.clone().or_else(|| s.active.clone());
+                    self.auto_reconnected = true;
+                    let kind_opt = startup_daemon_to_start(
+                        s.active.as_ref(),
+                        s.daemon_running.as_ref(),
+                    );
                     if let Some(k) = kind_opt {
-                        self.auto_reconnected = true;
                         Task::perform(
                             async move {
                                 tokio::time::sleep(std::time::Duration::from_millis(800)).await;
@@ -343,6 +348,38 @@ impl ImeState {
             container(col).padding([4, 0])
         )
         .into()
+    }
+}
+
+fn startup_daemon_to_start(
+    active: Option<&ImeKind>,
+    daemon_running: Option<&ImeKind>,
+) -> Option<ImeKind> {
+    if daemon_running.is_none() {
+        active.cloned()
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{startup_daemon_to_start, ImeKind};
+
+    #[test]
+    fn startup_keeps_a_running_daemon_alive() {
+        assert_eq!(
+            startup_daemon_to_start(Some(&ImeKind::Fcitx5), Some(&ImeKind::Fcitx5)),
+            None,
+        );
+    }
+
+    #[test]
+    fn startup_starts_the_active_daemon_when_missing() {
+        assert_eq!(
+            startup_daemon_to_start(Some(&ImeKind::Fcitx5), None),
+            Some(ImeKind::Fcitx5),
+        );
     }
 }
 
