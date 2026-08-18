@@ -83,6 +83,12 @@ pub struct ImeStatus {
     pub jetbrains_ides: Vec<JetBrainsVmOptions>,
     // 절전 복귀 시 IME 데몬을 자동 재시작하는 system-sleep 훅 설치 여부
     pub resume_hook_installed: bool,
+    // LibreOffice가 Wayland에서 fcitx GTK 모듈을 실제로 연결했는지와
+    // 사용자 범위 X11 호환 런처 설치 여부
+    pub libreoffice_installed: bool,
+    pub libreoffice_running_wayland: bool,
+    pub libreoffice_fcitx_module_loaded: bool,
+    pub libreoffice_compat_installed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +105,8 @@ pub enum ImeMsg {
     PatchJetBrains,
     InstallResumeHook,
     UninstallResumeHook,
+    InstallLibreOfficeCompat,
+    UninstallLibreOfficeCompat,
     Done(CmdResult),
 }
 
@@ -260,6 +268,22 @@ impl ImeState {
                 );
                 (task, None)
             }
+            ImeMsg::InstallLibreOfficeCompat => {
+                self.running = Some("LibreOffice 한글 입력 호환 모드 설치 중...".into());
+                let task = Task::perform(
+                    async { install_libreoffice_compat().await },
+                    ImeMsg::Done,
+                );
+                (task, None)
+            }
+            ImeMsg::UninstallLibreOfficeCompat => {
+                self.running = Some("LibreOffice 한글 입력 호환 모드 제거 중...".into());
+                let task = Task::perform(
+                    async { uninstall_libreoffice_compat().await },
+                    ImeMsg::Done,
+                );
+                (task, None)
+            }
             ImeMsg::Done(r) => {
                 self.running = None;
                 let refresh = Task::perform(async { scan_ime_status().await }, ImeMsg::Refreshed);
@@ -315,6 +339,11 @@ impl ImeState {
             col = col.push(Space::with_height(14));
             col = col.push(resume_hook_card(st.resume_hook_installed, is_running));
 
+            if st.libreoffice_installed {
+                col = col.push(Space::with_height(14));
+                col = col.push(libreoffice_ime_card(st, is_running));
+            }
+
             // ── 추가 진단 ─────────────────────────────────────
             if !st.shell_init_conflicts.is_empty() {
                 col = col.push(Space::with_height(14));
@@ -364,7 +393,7 @@ fn startup_daemon_to_start(
 
 #[cfg(test)]
 mod tests {
-    use super::{startup_daemon_to_start, ImeKind};
+    use super::{patch_libreoffice_desktop, startup_daemon_to_start, ImeKind, LO_COMPAT_MARKER};
 
     #[test]
     fn startup_keeps_a_running_daemon_alive() {
@@ -380,6 +409,21 @@ mod tests {
             startup_daemon_to_start(Some(&ImeKind::Fcitx5), None),
             Some(ImeKind::Fcitx5),
         );
+    }
+
+    #[test]
+    fn libreoffice_desktop_patch_updates_every_exec_entry() {
+        let original = "[Desktop Entry]\nExec=libreoffice --writer %U\n[Desktop Action New]\nExec=libreoffice --writer\n";
+        let patched = patch_libreoffice_desktop(original);
+        assert!(patched.starts_with(LO_COMPAT_MARKER));
+        assert_eq!(patched.matches("Exec=env GDK_BACKEND=x11 libreoffice").count(), 2);
+    }
+
+    #[test]
+    fn libreoffice_desktop_patch_does_not_double_prefix() {
+        let original = "Exec=env GDK_BACKEND=x11 libreoffice --writer %U\n";
+        let patched = patch_libreoffice_desktop(original);
+        assert_eq!(patched.matches("GDK_BACKEND=x11").count(), 1);
     }
 }
 
@@ -464,11 +508,18 @@ async fn scan_ime_status() -> ImeStatus {
     // 진단: 절전 복귀 IME 재시작 훅 설치 여부
     let resume_hook_installed = detect_resume_hook();
 
+    let libreoffice_installed = which_exists("libreoffice").await;
+    let (libreoffice_running_wayland, libreoffice_fcitx_module_loaded) =
+        detect_running_libreoffice_ime();
+    let libreoffice_compat_installed = detect_libreoffice_compat();
+
     ImeStatus {
         installed_ibus, installed_fcitx5, installed_kime,
         active, daemon_running, env_match,
         shell_init_conflicts, snap_im_module_file, jetbrains_ides,
         resume_hook_installed,
+        libreoffice_installed, libreoffice_running_wayland,
+        libreoffice_fcitx_module_loaded, libreoffice_compat_installed,
     }
 }
 
@@ -661,6 +712,142 @@ fn detect_snap_im_leak() -> Option<String> {
     } else {
         None
     }
+}
+
+// ── LibreOffice Wayland/fcitx 호환 런처 ────────────────────────
+// COSMIC Wayland에서 LibreOffice(GTK3)가 GTK_IM_MODULE=fcitx를 상속하고도
+// im-fcitx5.so를 로드하지 않는 경우가 있다. 시스템 desktop 파일을 수정하면
+// 패키지 업데이트에 덮어써지므로, 같은 desktop ID의 사용자 사본에서만
+// GDK_BACKEND=x11을 강제한다. X11에서는 기존 GTK IM 모듈 경로를 사용한다.
+const LO_COMPAT_MARKER: &str = "# popmgr-libreoffice-ime-compat: v1";
+const LO_DESKTOP_NAMES: &[&str] = &[
+    "libreoffice-startcenter.desktop",
+    "libreoffice-writer.desktop",
+    "libreoffice-calc.desktop",
+    "libreoffice-impress.desktop",
+    "libreoffice-draw.desktop",
+    "libreoffice-math.desktop",
+];
+
+fn libreoffice_user_app_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+    std::path::PathBuf::from(home).join(".local/share/applications")
+}
+
+fn detect_libreoffice_compat() -> bool {
+    let path = libreoffice_user_app_dir().join("libreoffice-writer.desktop");
+    std::fs::read_to_string(path)
+        .map(|c| c.lines().any(|line| line == LO_COMPAT_MARKER))
+        .unwrap_or(false)
+}
+
+fn detect_running_libreoffice_ime() -> (bool, bool) {
+    let Ok(entries) = std::fs::read_dir("/proc") else { return (false, false) };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) { continue; }
+        let proc_dir = entry.path();
+        let comm = std::fs::read_to_string(proc_dir.join("comm")).unwrap_or_default();
+        if comm.trim() != "soffice.bin" { continue; }
+
+        let env = std::fs::read(proc_dir.join("environ")).unwrap_or_default();
+        let running_wayland = env.split(|b| *b == 0).any(|item|
+            item.starts_with(b"WAYLAND_DISPLAY=") && item.len() > b"WAYLAND_DISPLAY=".len()
+        );
+        let maps = std::fs::read_to_string(proc_dir.join("maps")).unwrap_or_default();
+        return (running_wayland, maps.contains("im-fcitx5.so"));
+    }
+    (false, false)
+}
+
+fn patch_libreoffice_desktop(original: &str) -> String {
+    let mut out = String::with_capacity(original.len() + 128);
+    out.push_str(LO_COMPAT_MARKER);
+    out.push('\n');
+    for line in original.lines() {
+        if let Some(command) = line.strip_prefix("Exec=") {
+            if command.starts_with("env GDK_BACKEND=x11 ") {
+                out.push_str(line);
+            } else {
+                out.push_str("Exec=env GDK_BACKEND=x11 ");
+                out.push_str(command);
+            }
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+async fn install_libreoffice_compat() -> CmdResult {
+    let user_dir = libreoffice_user_app_dir();
+    if let Err(e) = tokio::fs::create_dir_all(&user_dir).await {
+        return CmdResult { success: false, output: format!("사용자 앱 디렉터리 생성 실패: {e}") };
+    }
+
+    let mut installed = Vec::new();
+    let mut skipped = Vec::new();
+    for name in LO_DESKTOP_NAMES {
+        let source = std::path::Path::new("/usr/share/applications").join(name);
+        let target = user_dir.join(name);
+        if let Ok(existing) = tokio::fs::read_to_string(&target).await {
+            if !existing.lines().any(|line| line == LO_COMPAT_MARKER) {
+                skipped.push(format!("{name} (기존 사용자 설정 보존)"));
+                continue;
+            }
+        }
+        let original = match tokio::fs::read_to_string(&source).await {
+            Ok(c) => c,
+            Err(e) => {
+                skipped.push(format!("{name} (시스템 파일 읽기 실패: {e})"));
+                continue;
+            }
+        };
+        if let Err(e) = tokio::fs::write(&target, patch_libreoffice_desktop(&original)).await {
+            skipped.push(format!("{name} (쓰기 실패: {e})"));
+        } else {
+            installed.push(*name);
+        }
+    }
+
+    let _ = runner::run("update-desktop-database", &[user_dir.to_string_lossy().as_ref()]).await;
+    let success = !installed.is_empty() && skipped.is_empty();
+    let mut output = if installed.is_empty() {
+        "설치된 LibreOffice 호환 런처가 없습니다.".to_string()
+    } else {
+        format!(
+            "LibreOffice 한글 입력 호환 모드 설치: {}개\n\n열려 있는 LibreOffice를 모두 닫고 다시 실행하세요.",
+            installed.len()
+        )
+    };
+    if !skipped.is_empty() {
+        output.push_str("\n\n처리하지 못한 항목:\n- ");
+        output.push_str(&skipped.join("\n- "));
+    }
+    CmdResult { success, output }
+}
+
+async fn uninstall_libreoffice_compat() -> CmdResult {
+    let user_dir = libreoffice_user_app_dir();
+    let mut removed = 0usize;
+    let mut failures = Vec::new();
+    for name in LO_DESKTOP_NAMES {
+        let target = user_dir.join(name);
+        let Ok(existing) = tokio::fs::read_to_string(&target).await else { continue };
+        if !existing.lines().any(|line| line == LO_COMPAT_MARKER) { continue; }
+        match tokio::fs::remove_file(&target).await {
+            Ok(_) => removed += 1,
+            Err(e) => failures.push(format!("{name}: {e}")),
+        }
+    }
+    let _ = runner::run("update-desktop-database", &[user_dir.to_string_lossy().as_ref()]).await;
+    let mut output = format!("LibreOffice 한글 입력 호환 런처 {removed}개 제거.");
+    if !failures.is_empty() {
+        output.push_str("\n실패:\n- ");
+        output.push_str(&failures.join("\n- "));
+    }
+    CmdResult { success: failures.is_empty(), output }
 }
 
 async fn find_jetbrains_vmoptions() -> Vec<JetBrainsVmOptions> {
@@ -1054,6 +1241,67 @@ fn resume_hook_card(installed: bool, disabled: bool) -> Element<'static, ImeMsg>
                 color: if installed { C_OK } else { C_WARN },
                 width: 1.0,
             },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn libreoffice_ime_card(st: &ImeStatus, disabled: bool) -> Element<'static, ImeMsg> {
+    let broken_now = st.libreoffice_running_wayland && !st.libreoffice_fcitx_module_loaded;
+    let compat_installed = st.libreoffice_compat_installed;
+    let (title, title_col, desc, btn_label, btn_msg, btn_col) = if st.libreoffice_compat_installed {
+        (
+            "[OK] LibreOffice 한글 입력 호환 모드 설치됨",
+            C_OK,
+            "LibreOffice를 X11/GTK 입력 경로로 실행합니다. 해제하면 기본 Wayland 실행 방식으로 돌아갑니다.",
+            "호환 모드 해제",
+            ImeMsg::UninstallLibreOfficeCompat,
+            C_DIM,
+        )
+    } else if broken_now {
+        (
+            "[!] LibreOffice가 fcitx 입력 모듈을 연결하지 못함",
+            C_ERR,
+            "현재 LibreOffice는 Wayland로 실행됐지만 im-fcitx5.so가 로드되지 않았습니다. X11 호환 모드로 실행하면 한/영 전환이 GTK fcitx 모듈을 통과합니다.",
+            "한글 입력 호환 모드 설치",
+            ImeMsg::InstallLibreOfficeCompat,
+            C_BLUE,
+        )
+    } else {
+        (
+            "[i] LibreOffice 한글 입력 호환 모드",
+            C_BLUE,
+            "LibreOffice에서만 한/영 전환이 안 될 때 사용자 범위 런처에 X11 입력 경로를 적용합니다. 설치 후 열려 있는 LibreOffice를 모두 닫고 다시 실행해야 합니다.",
+            "호환 모드 설치",
+            ImeMsg::InstallLibreOfficeCompat,
+            C_BLUE,
+        )
+    };
+
+    let body = column![
+        text(title).size(13).color(title_col),
+        Space::with_height(4),
+        text(desc).size(11).color(C_DIM),
+        Space::with_height(8),
+        row![
+            Space::with_width(Length::Fill),
+            action_btn(btn_label, btn_msg, !disabled, btn_col),
+        ],
+    ];
+    container(body)
+        .width(Length::Fill)
+        .padding([12, 14])
+        .style(move |_| iced::widget::container::Style {
+            background: Some(iced::Background::Color(
+                if compat_installed {
+                    Color { r: 0.906, g: 0.976, b: 0.949, a: 1.0 }
+                } else if broken_now {
+                    Color { r: 0.996, g: 0.925, b: 0.933, a: 1.0 }
+                } else {
+                    Color { r: 0.918, g: 0.953, b: 0.996, a: 1.0 }
+                }
+            )),
+            border: iced::Border { radius: 8.0.into(), color: title_col, width: 1.0 },
             ..Default::default()
         })
         .into()

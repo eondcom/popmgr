@@ -25,6 +25,7 @@ Pop!_OS / COSMIC 데스크톱 관리 도구 — Rust + [Iced](https://github.com
 - COSMIC 환경 권장 IME: **kime**
 - **셸 init 충돌 진단**: `~/.profile`, `~/.bashrc`, `~/.zshrc`, `~/.zprofile`, `~/.bash_profile` 에서 활성 IME와 모순되는 `GTK_IM_MODULE`/`QT_IM_MODULE`/`XMODIFIERS` 등 export 라인을 감지. "정리" 버튼으로 자동 백업 후 주석 처리.
 - **snap 누출 감지**: 현재 환경의 `GTK_IM_MODULE_FILE` 이 snap 캐시(`~/snap/.../immodules.cache`)를 가리키면 경고. snap 앱이 띄운 셸에서 IDE 를 실행하면 시스템 GTK IM 모듈을 못 찾아 한글 입력이 깨지는 사고를 미리 차단.
+- **LibreOffice 한글 입력 호환 모드**: COSMIC Wayland에서 LibreOffice가 `GTK_IM_MODULE=fcitx`를 상속하고도 `im-fcitx5.so`를 연결하지 못하는 상태를 실행 프로세스에서 진단. 버튼 한 번으로 시스템 파일은 건드리지 않고 사용자 범위 desktop 런처에 X11/GTK 입력 경로를 적용하거나 해제.
 - **JetBrains IDE vmoptions 자동 패치**: `~/.config/JetBrains/<IDE>/*.vmoptions` 파일들을 스캔해 XIM 안정화 옵션(`-Dawt.toolkit.name=XToolkit`, `-Drecreate.x11.input.method=true`) 누락 여부를 표시. "패치" 버튼으로 백업 후 자동 추가 — IntelliJ Ultimate 의 `XInputMethod.setXICFocusNative` 133초 freeze 같은 사고를 예방.
 
 ### USB 탭
