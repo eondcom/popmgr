@@ -5,4 +5,5 @@ pub mod disk;
 pub mod display;
 pub mod ime;
 pub mod power;
+pub mod printer;
 pub mod usb;

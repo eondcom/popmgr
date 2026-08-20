@@ -14,6 +14,7 @@ use ui::{
     display::{DisplayMsg, DisplayState},
     ime::{ImeMsg, ImeState},
     power::{PowerMsg, PowerState},
+    printer::{PrinterMsg, PrinterState},
     usb::{UsbMsg, UsbState},
 };
 use ui::ime::{C_BG, C_BLUE, C_BORDER, C_DIM, C_OK, C_ERR, C_SURFACE, C_TEXT};
@@ -38,7 +39,7 @@ fn app_theme() -> iced::Theme {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Tab { Ime, Usb, Audio, Disk, Display, Power, Cosmic, Apps }
+enum Tab { Ime, Usb, Audio, Disk, Display, Power, Cosmic, Printer, Apps }
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -50,6 +51,7 @@ enum Message {
     Display(DisplayMsg),
     Power(PowerMsg),
     Cosmic(CosmicMsg),
+    Printer(PrinterMsg),
     Apps(AppsMsg),
     CopyLog,
     DrainStreamLog,
@@ -64,6 +66,7 @@ struct App {
     display: DisplayState,
     power: PowerState,
     cosmic: CosmicState,
+    printer: PrinterState,
     apps: AppsState,
     output: String,
 }
@@ -213,6 +216,7 @@ fn init() -> (App, Task<Message>) {
         display: DisplayState::new(),
         power: PowerState::new(),
         cosmic: CosmicState::new(),
+        printer: PrinterState::new(),
         apps: AppsState::new(),
         output: String::new(),
     };
@@ -223,6 +227,7 @@ fn init() -> (App, Task<Message>) {
         Task::perform(async { () }, |_| Message::Disk(DiskMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Display(DisplayMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Cosmic(CosmicMsg::Refresh)),
+        Task::perform(async { () }, |_| Message::Printer(PrinterMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Apps(AppsMsg::Refresh)),
     ]);
     (app, task)
@@ -303,6 +308,11 @@ fn update(app: &mut App, msg: Message) -> Task<Message> {
             if let Some(r) = res { push_log(&mut app.output, r); }
             task.map(Message::Cosmic)
         }
+        Message::Printer(m) => {
+            let (task, res) = app.printer.update(m);
+            if let Some(r) = res { push_log(&mut app.output, r); }
+            task.map(Message::Printer)
+        }
         Message::Apps(m) => {
             let (task, res) = app.apps.update(m);
             if let Some(r) = res { push_log(&mut app.output, r); }
@@ -347,6 +357,7 @@ fn view(app: &App) -> Element<'_, Message> {
         Tab::Display => app.display.view().map(Message::Display),
         Tab::Power   => app.power.view().map(Message::Power),
         Tab::Cosmic => app.cosmic.view().map(Message::Cosmic),
+        Tab::Printer => app.printer.view().map(Message::Printer),
         Tab::Apps   => app.apps.view().map(Message::Apps),
     };
 
@@ -373,6 +384,7 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
         (Tab::Display, "디스플레이", "모니터 밝기"),
         (Tab::Power,  "전원",       "절전 / 예약"),
         (Tab::Cosmic, "COSMIC",     "COSMIC 트윅"),
+        (Tab::Printer, "프린터",    "등록 / 문제 진단"),
         (Tab::Apps,   "앱 관리",    "설치 / 제거"),
     ];
 
