@@ -76,7 +76,7 @@ bash install.sh
 
 `install.sh`가 다음을 순서대로 실행합니다:
 1. popmgr 빌드 → `~/.local/bin/popmgr` 설치
-2. `~/.local/share/applications/popmgr.desktop` 등록
+2. `~/.local/share/applications/com.eondcom.Popmgr.desktop` 등록
 3. cosmic-files copy-path 패치 적용
 4. cosmic-comp 3-finger 패치 적용
 
@@ -93,7 +93,7 @@ cargo build --release
 ./target/release/popmgr
 
 # 앱 런처 등록
-cp popmgr.desktop ~/.local/share/applications/
+cp com.eondcom.Popmgr.desktop ~/.local/share/applications/
 ```
 
 ---
