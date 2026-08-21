@@ -29,7 +29,7 @@ pub enum DiskMsg {
     Refresh,
     Refreshed(Vec<DiskGroup>),
     Mount(String),
-    Unmount(String),
+    Unmount(String, String), // (dev, mountpoint)
     PowerOff(String),
     Reconnect,
     Open(String),
@@ -63,9 +63,9 @@ impl DiskState {
                 let script = format!("udisksctl mount -b '{dev}' 2>&1");
                 (apply(script), None)
             }
-            DiskMsg::Unmount(dev) => {
+            DiskMsg::Unmount(dev, mp) => {
                 self.running = Some(format!("{dev} 마운트 해제 중..."));
-                let script = format!("udisksctl unmount -b '{dev}' 2>&1");
+                let script = unmount_script(&dev, &mp);
                 (apply(script), None)
             }
             DiskMsg::PowerOff(dev) => {
@@ -220,7 +220,7 @@ fn disk_card<'a>(d: &'a DiskGroup, is_busy: bool, external: bool) -> Element<'a,
                 r = r.push(action_btn("열기", DiskMsg::Open(mp.clone()), !is_busy, C_GREEN));
                 if is_user_mount(mp) {
                     r = r.push(Space::with_width(6));
-                    r = r.push(action_btn("해제", DiskMsg::Unmount(p.path.clone()), !is_busy, C_WARN));
+                    r = r.push(action_btn("해제", DiskMsg::Unmount(p.path.clone(), mp.clone()), !is_busy, C_WARN));
                 }
             }
             None => {
@@ -259,6 +259,24 @@ fn disk_card<'a>(d: &'a DiskGroup, is_busy: bool, external: bool) -> Element<'a,
 
 fn apply(script: String) -> Task<DiskMsg> {
     Task::perform(async move { runner::run_sh(&script).await }, DiskMsg::Applied)
+}
+
+/// 마운트 해제 시도. "busy"로 실패하면 fuser로 원인 프로세스를 찾아
+/// 원본 dbus 에러 대신 어떤 프로그램을 닫아야 하는지 안내한다
+/// (흔한 원인: 파일 탐색기가 그 폴더를 열람 중).
+fn unmount_script(dev: &str, mp: &str) -> String {
+    format!(
+        "out=$(udisksctl unmount -b '{dev}' 2>&1); \
+         if [ $? -ne 0 ]; then \
+             echo \"$out\"; \
+             if echo \"$out\" | grep -qi busy; then \
+                 procs=$(fuser -vm '{mp}' 2>/dev/null | tail -n +2 | awk '{{print $NF}}' | sort -u | paste -sd, -); \
+                 [ -n \"$procs\" ] && echo \"[안내] 다음 프로그램이 이 디스크를 사용 중입니다: $procs — 창을 닫고 다시 시도하세요.\"; \
+             fi; \
+             exit 1; \
+         fi; \
+         echo \"$out\""
+    )
 }
 
 /// 안전 제거(power-off)됐거나 열거 실패로 안 보이는 USB 디스크를 되살린다.
