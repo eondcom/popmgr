@@ -195,6 +195,14 @@ impl AppsState {
                     # 반드시 실파일로 복사한다. (기존 링크도 실파일로 교체)
                     FONTDIR="$PREFIX/drive_c/windows/Fonts"
                     mkdir -p "$FONTDIR"
+                    # 새로 깐 시스템에는 한글 폰트가 없을 수 있다(한국어 언어 지원을 추가해야 들어온다).
+                    # 없으면 복사 단계가 통째로 건너뛰어져 한글이 다시 □ 로 깨지므로 먼저 설치한다.
+                    if [ ! -f /usr/share/fonts/truetype/nanum/NanumGothic.ttf ]; then
+                        echo "호스트에 나눔 폰트 없음 — 설치 시도 (fonts-nanum)"
+                        pkexec sh -c 'apt-get install -y fonts-nanum fonts-noto-cjk 2>&1 | tail -3' \
+                            || echo "! 자동 설치 실패 — 'sudo apt install fonts-nanum' 후 이 설치를 다시 실행하세요"
+                        fc-cache -f >/dev/null 2>&1 || true
+                    fi
                     for src in \
                         /usr/share/fonts/truetype/nanum/NanumGothic.ttf \
                         /usr/share/fonts/truetype/nanum/NanumGothicBold.ttf \
