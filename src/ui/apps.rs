@@ -198,6 +198,7 @@ impl AppsState {
                     for src in \
                         /usr/share/fonts/truetype/nanum/NanumGothic.ttf \
                         /usr/share/fonts/truetype/nanum/NanumGothicBold.ttf \
+                        /usr/share/fonts/truetype/nanum/NanumMyeongjo.ttf \
                         /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
                         /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc
                     do
@@ -224,8 +225,11 @@ impl AppsState {
                         export WINEDEBUG=-all
                         W='$RUNNER_DIR/bin/wine'
                         SUB='HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\FontSubstitutes'
-                        for f in 'MS Shell Dlg' 'MS Shell Dlg 2' 'Tahoma' 'Segoe UI' 'Verdana' 'MS Sans Serif' 'Microsoft Sans Serif'; do
+                        for f in 'MS Shell Dlg' 'MS Shell Dlg 2' 'Tahoma' 'Segoe UI' 'Verdana' 'MS Sans Serif' 'Microsoft Sans Serif' 'Malgun Gothic' 'Gulim' 'GulimChe' 'Dotum' 'DotumChe'; do
                             \"\$W\" reg add \"\$SUB\" /v \"\$f\" /t REG_SZ /d NanumGothic /f >/dev/null 2>&1
+                        done
+                        for f in 'Batang' 'BatangChe' 'Gungsuh'; do
+                            \"\$W\" reg add \"\$SUB\" /v \"\$f\" /t REG_SZ /d NanumMyeongjo /f >/dev/null 2>&1
                         done
                         '$RUNNER_DIR/bin/wineserver' -w 2>/dev/null
                     " || true
