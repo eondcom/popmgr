@@ -179,7 +179,7 @@ impl AppsState {
                     fi
 
                     echo
-                    echo "=== [5/8] d3d builtin DLL 복사 (대화창 흰/검 창 차단) ==="
+                    echo "=== [5/9] d3d builtin DLL 복사 (대화창 흰/검 창 차단) ==="
                     SYS32="$PREFIX/drive_c/windows/system32"
                     WINE_DLLS="$RUNNER_DIR/lib/wine/i386-windows"
                     for dll in d3d9 d3d10 d3d10core d3d11 dxgi; do
@@ -189,10 +189,54 @@ impl AppsState {
                     done
 
                     echo
-                    echo "=== [6/8] 사용자 런처 (popmgr-ime-fix-v7) ==="
+                    echo "=== [6/9] 한글 폰트 실파일 + 폰트 레지스트리 (한글 □ 깨짐 차단) ==="
+                    # flatpak 샌드박스 안에서는 호스트의 /usr/share/fonts 가 보이지 않는다(/run/host/fonts 로 마운트됨).
+                    # 그래서 Fonts 폴더에 심볼릭 링크를 넣으면 Wine 이 폰트를 못 읽어 한글이 전부 □ 로 깨진다.
+                    # 반드시 실파일로 복사한다. (기존 링크도 실파일로 교체)
+                    FONTDIR="$PREFIX/drive_c/windows/Fonts"
+                    mkdir -p "$FONTDIR"
+                    for src in \
+                        /usr/share/fonts/truetype/nanum/NanumGothic.ttf \
+                        /usr/share/fonts/truetype/nanum/NanumGothicBold.ttf \
+                        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
+                        /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc
+                    do
+                        [ -f "$src" ] || continue
+                        dst="$FONTDIR/$(basename "$src")"
+                        if [ -L "$dst" ] || [ ! -f "$dst" ]; then
+                            rm -f "$dst"
+                            cp "$src" "$dst" && echo "폰트 복사: $(basename "$src")"
+                        fi
+                    done
+                    if [ ! -f "$FONTDIR/NanumGothic.ttf" ]; then
+                        echo "! 나눔 폰트 없음 — 'sudo apt install fonts-nanum' 후 다시 실행하세요"
+                    fi
+
+                    # 폰트 이름 치환 — 파일 저장 대화상자 등 Wine 공용 UI 의 한글 □ 깨짐 차단.
+                    #
+                    # 주의: HKCU\Control Panel\Desktop\WindowMetrics 의 LOGFONT(MenuFont 등)까지
+                    #       한글 폰트로 바꾸면 Wine 메뉴 한글은 고쳐지지만 카카오톡이 시작 직후
+                    #       c0000409(STATUS_STACK_BUFFER_OVERRUN)로 죽는다. 실측으로 확인했으므로
+                    #       WindowMetrics 는 건드리지 않는다. Wine 메뉴 한글보다 카카오톡 실행이 우선.
+                    flatpak run --command=bash com.usebottles.bottles -c "
+                        export WINEPREFIX='$PREFIX'
+                        export WINEARCH=win32
+                        export WINEDEBUG=-all
+                        W='$RUNNER_DIR/bin/wine'
+                        SUB='HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\FontSubstitutes'
+                        for f in 'MS Shell Dlg' 'MS Shell Dlg 2' 'Tahoma' 'Segoe UI' 'Verdana' 'MS Sans Serif' 'Microsoft Sans Serif'; do
+                            \"\$W\" reg add \"\$SUB\" /v \"\$f\" /t REG_SZ /d NanumGothic /f >/dev/null 2>&1
+                        done
+                        '$RUNNER_DIR/bin/wineserver' -w 2>/dev/null
+                    " || true
+                    echo "● 폰트 치환 적용 (파일 저장 대화상자·카카오톡 UI 한글)"
+
+                    echo
+                    echo "=== [7/9] 사용자 런처 (popmgr-ime-fix-v7) ==="
                     cat > "$HOME/.local/bin/kakaotalk" <<'LAUNCHER_EOF'
 #!/bin/bash
-# popmgr-ime-fix-v10 — Bottles KakaoTalk32 + 시스템 IM 자동 감지 + 소프트웨어 GL(검은 화면 우회) + 트레이 숨김 복원 리페인트
+# popmgr-ime-fix-v11 — Bottles KakaoTalk32 + 시스템 IM 자동 감지 + 소프트웨어 GL(검은 화면 우회)
+#                       + 트레이 숨김 복원 리페인트 + Wine systray 창 unmap(포커스 깜빡임 차단)
 WIN32_PREFIX="$HOME/.var/app/com.usebottles.bottles/data/bottles/bottles/KakaoTalk32"
 RUNNER="$HOME/.var/app/com.usebottles.bottles/data/bottles/runners/wine-11.10-staging-amd64"
 KAKAO_EXE="$WIN32_PREFIX/drive_c/Program Files/Kakao/KakaoTalk/KakaoTalk.exe"
@@ -267,6 +311,25 @@ xsetroot -cursor_name left_ptr 2>/dev/null
     done
 ) >/dev/null 2>&1 &
 
+# Wine standalone systray 창 숨김 — 창 전환 시 포커스 깜빡임 차단
+# COSMIC 은 XEmbed 트레이(_NET_SYSTEM_TRAY_S0)를 제공하지 않아, Wine explorer 가
+# 224x28 짜리 자체 트레이 창을 띄운다. 이 창이 _NET_WM_WINDOW_TYPE_NORMAL 이라
+# WM 의 포커스 후보에 들어가고, 대화창을 닫아 포커스가 재배치될 때 포커스를 채간다.
+# 레지스트리 ShowSystray=N 으로 끄면 카카오톡이 Shell_NotifyIcon 실패로 죽는다(검증됨).
+# 그래서 트레이 기능은 그대로 두고 창만 unmap 한다 — COSMIC 에선 어차피 안 보이는 창.
+(
+    while pgrep -f "KakaoTalk\.exe" >/dev/null 2>&1; do
+        sleep 3
+        for w in $(xdotool search --class "explorer.exe" 2>/dev/null); do
+            # 이름 있는 창(진짜 explorer 창)은 건드리지 않음
+            [ -n "$(xdotool getwindowname "$w" 2>/dev/null)" ] && continue
+            h=$(xdotool getwindowgeometry --shell "$w" 2>/dev/null | grep ^HEIGHT | cut -d= -f2)
+            [ -n "$h" ] && [ "$h" -lt 60 ] 2>/dev/null || continue
+            xwininfo -id "$w" 2>/dev/null | grep -q IsViewable && xdotool windowunmap "$w" 2>/dev/null
+        done
+    done
+) >/dev/null 2>&1 &
+
 exec flatpak run \
     --env=DISPLAY="$DISPLAY" \
     --env=XMODIFIERS="${XMODIFIERS:-@im=$SYS_IM}" \
@@ -289,7 +352,7 @@ LAUNCHER_EOF
                     echo "● $HOME/.local/bin/kakaotalk"
 
                     echo
-                    echo "=== [7/8] 사용자 desktop + 아이콘 ==="
+                    echo "=== [8/9] 사용자 desktop + 아이콘 ==="
                     mkdir -p "$HOME/.local/share/applications"
                     cat > "$HOME/.local/share/applications/kakaotalk.desktop" <<DESK_EOF
 [Desktop Entry]
@@ -320,7 +383,7 @@ SVG_EOF
                     fi
 
                     echo
-                    echo "=== [8/8] 데스크톱/아이콘 캐시 갱신 ==="
+                    echo "=== [9/9] 데스크톱/아이콘 캐시 갱신 ==="
                     update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
                     gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 
@@ -329,6 +392,8 @@ SVG_EOF
                     echo "  → 앱 메뉴/독에서 카오톡 클릭 → 정상 실행 + 한글 입력 안정"
                     echo "  → 검은/흰 대화창 없음 (builtin d3d DLL 적용)"
                     echo "  → 한 번 띄운 후 다시 클릭하면 윈도우 활성화 (트레이 없어도 OK)"
+                    echo "  → 파일 저장 대화상자/카카오톡 UI 한글 정상 (폰트 실파일 + 이름 치환)"
+                    echo "  → Wine 트레이 창 숨김으로 창 전환 시 포커스 깜빡임 차단"
                 "##;
                 let _unused = r##"
                     set -e
