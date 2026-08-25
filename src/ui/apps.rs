@@ -215,10 +215,17 @@ impl AppsState {
 
                     # 폰트 이름 치환 — 파일 저장 대화상자 등 Wine 공용 UI 의 한글 □ 깨짐 차단.
                     #
-                    # 주의: HKCU\Control Panel\Desktop\WindowMetrics 의 LOGFONT(MenuFont 등)까지
-                    #       한글 폰트로 바꾸면 Wine 메뉴 한글은 고쳐지지만 카카오톡이 시작 직후
-                    #       c0000409(STATUS_STACK_BUFFER_OVERRUN)로 죽는다. 실측으로 확인했으므로
-                    #       WindowMetrics 는 건드리지 않는다. Wine 메뉴 한글보다 카카오톡 실행이 우선.
+                    # WindowMetrics(LOGFONT)는 실제로 필요한 MenuFont/IconFont 둘만 바꾼다.
+                    #  - MenuFont: 메뉴·문맥메뉴 한글
+                    #  - IconFont: 파일 대화상자의 파일/폴더 목록 한글
+                    # 나머지 넷(CaptionFont/MessageFont/StatusFont/SmCaptionFont)은 이득이 적어
+                    # (캡션은 WM 이 그리고, 메시지박스/상태바는 드물다) 건드리지 않는다.
+                    #
+                    # 참고: 카카오톡은 시작 시 c0000409 로 죽는 일이 간헐적으로 있는데,
+                    # LOGFONT 적용 여부와 무관하다. 3회씩 측정해 원본 2/1, 적용 2/1 로 같았다.
+                    # (강제 종료 직후 재시작할 때 잘 나며, 다시 실행하면 뜬다)
+                    # LOGFONTW(92B): lfHeight=8, lfWeight=400, lfCharSet=DEFAULT, lfFaceName="NanumGothic"
+                    LF8="080000000000000000000000000000009001000000000001000000004e0061006e0075006d0047006f007400680069006300000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
                     flatpak run --command=bash com.usebottles.bottles -c "
                         export WINEPREFIX='$PREFIX'
                         export WINEARCH=win32
@@ -231,9 +238,13 @@ impl AppsState {
                         for f in 'Batang' 'BatangChe' 'Gungsuh'; do
                             \"\$W\" reg add \"\$SUB\" /v \"\$f\" /t REG_SZ /d NanumMyeongjo /f >/dev/null 2>&1
                         done
+                        WM='HKCU\\Control Panel\\Desktop\\WindowMetrics'
+                        for v in MenuFont IconFont; do
+                            \"\$W\" reg add \"\$WM\" /v \"\$v\" /t REG_BINARY /d $LF8 /f >/dev/null 2>&1
+                        done
                         '$RUNNER_DIR/bin/wineserver' -w 2>/dev/null
                     " || true
-                    echo "● 폰트 치환 적용 (파일 저장 대화상자·카카오톡 UI 한글)"
+                    echo "● 폰트 치환 + 메뉴/목록 폰트 적용 (저장 대화상자·메뉴·폴더명 한글)"
 
                     echo
                     echo "=== [7/9] 사용자 런처 (popmgr-ime-fix-v7) ==="
@@ -319,8 +330,10 @@ xsetroot -cursor_name left_ptr 2>/dev/null
 # COSMIC 은 XEmbed 트레이(_NET_SYSTEM_TRAY_S0)를 제공하지 않아, Wine explorer 가
 # 224x28 짜리 자체 트레이 창을 띄운다. 이 창이 _NET_WM_WINDOW_TYPE_NORMAL 이라
 # WM 의 포커스 후보에 들어가고, 대화창을 닫아 포커스가 재배치될 때 포커스를 채간다.
-# 레지스트리 ShowSystray=N 으로 끄면 카카오톡이 Shell_NotifyIcon 실패로 죽는다(검증됨).
-# 그래서 트레이 기능은 그대로 두고 창만 unmap 한다 — COSMIC 에선 어차피 안 보이는 창.
+# 레지스트리 ShowSystray=N 으로 트레이 자체를 끄는 방법은 쓰지 않는다.
+# (그 상태에서 카카오톡 크래시를 봤는데, 카카오톡에는 시작 시 간헐적 크래시가 따로 있어
+#  인과를 확정하지는 못했다. 굳이 트레이 등록을 깰 이유가 없다.)
+# 트레이 기능은 그대로 두고 창만 unmap 한다 — COSMIC 에선 어차피 안 보이는 창.
 (
     while pgrep -f "KakaoTalk\.exe" >/dev/null 2>&1; do
         sleep 3
@@ -396,7 +409,7 @@ SVG_EOF
                     echo "  → 앱 메뉴/독에서 카오톡 클릭 → 정상 실행 + 한글 입력 안정"
                     echo "  → 검은/흰 대화창 없음 (builtin d3d DLL 적용)"
                     echo "  → 한 번 띄운 후 다시 클릭하면 윈도우 활성화 (트레이 없어도 OK)"
-                    echo "  → 파일 저장 대화상자/카카오톡 UI 한글 정상 (폰트 실파일 + 이름 치환)"
+                    echo "  → 저장 대화상자·메뉴·폴더명 한글 정상 (폰트 실파일 + 치환 + MenuFont/IconFont)"
                     echo "  → Wine 트레이 창 숨김으로 창 전환 시 포커스 깜빡임 차단"
                 "##;
                 let _unused = r##"
