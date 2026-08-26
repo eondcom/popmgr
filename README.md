@@ -60,6 +60,11 @@ Pop!_OS / COSMIC 데스크톱 관리 도구 — Rust + [Iced](https://github.com
 
 ### 앱 관리 탭
 - KakaoTalk Wine 설치 / 실행
+- Orca 설치 — 공식 릴리스(`stablyai/orca`)에서 최신 `.deb`를 받아 설치하고
+  독 즐겨찾기까지 등록한다. 버전과 sha512는 릴리스의 `latest-linux.yml`에서
+  읽으므로 새 버전이 나와도 그대로 동작한다. 네트워크가 막혔거나 이미
+  AppImage를 받아둔 경우에는 AppImage를 `~/Applications`로 정리해
+  아이콘·바로가기·독에 등록하는 경로로 넘어간다.
 - APT·Flatpak 패키지 검색 및 일괄 제거
 
 ---
