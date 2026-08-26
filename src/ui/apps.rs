@@ -26,6 +26,7 @@ pub struct AppsStatus {
     pub kakaotalk_wmclass_ok: bool,
     pub kakaotalk_icon_ok: bool,
     pub kakaotalk_ime_patched: bool,
+    pub orca_deb_installed: bool,
     pub orca_appimage: Option<String>,
     pub orca_version: Option<String>,
     pub orca_desktop: Option<String>,
@@ -108,15 +109,76 @@ impl AppsState {
             }
             AppsMsg::InstallOrca => {
                 self.running = Some("Orca 런처·독 등록 중...".into());
-                // Orca 는 AppImage 로 배포되어 .desktop 을 스스로 만들지 않는다.
-                // 그래서 설치해도 런처·독에 아이콘이 없어 "실행이 안 된다"고 보인다.
-                // 여기서 AppImage 를 ~/Applications 로 정리하고 아이콘·런처·독을 한 번에 등록한다.
+                // 새로 깐 리눅스에서 이 버튼 하나로 끝나야 한다.
+                // 1순위는 공식 .deb (stablyai/orca GitHub 릴리스). dpkg 가 런처·아이콘을
+                // 알아서 등록하고 이후 업데이트·제거도 apt 로 된다.
+                // 네트워크가 막혔거나 이미 AppImage 를 받아둔 경우를 위해 AppImage 경로도 남긴다.
                 let script = r#"
 set -u
 APPDIR="$HOME/Applications"
 APPS="$HOME/.local/share/applications"
 ICONS="$HOME/.local/share/icons/hicolor"
 FAV="$HOME/.config/cosmic/com.system76.CosmicAppList/v1/favorites"
+REL="https://github.com/stablyai/orca/releases"
+DESK_LOCAL="$APPS/orca-ide.desktop"
+CACHE="$HOME/.cache/popmgr"
+
+DEB_INSTALLED=0
+if dpkg -s orca-ide >/dev/null 2>&1; then
+    DEB_INSTALLED=1
+    echo "=== orca-ide 패키지 설치됨 ($(dpkg-query -W -f='${Version}' orca-ide 2>/dev/null)) ==="
+fi
+
+if [ "$DEB_INSTALLED" = "0" ]; then
+    echo "=== [deb 1/3] 최신 릴리스 확인 ==="
+    # latest-linux.yml 에 버전과 sha512 가 함께 들어 있어 URL 을 하드코딩하지 않아도 된다.
+    YML=$(curl -fsSL --max-time 60 "$REL/latest/download/latest-linux.yml" 2>/dev/null || true)
+    VER=$(printf '%s\n' "$YML" | grep '^version:' | head -1 | awk '{print $2}' | tr -d '\r')
+    if [ -n "$VER" ]; then
+        echo "최신 버전: $VER"
+        DEBFILE="orca-ide_${VER}_amd64.deb"
+        mkdir -p "$CACHE"
+        echo "=== [deb 2/3] 다운로드 ($DEBFILE, 약 155MB) ==="
+        if curl -fL --max-time 1800 -o "$CACHE/$DEBFILE" "$REL/download/v${VER}/${DEBFILE}"; then
+            SUM_B64=$(printf '%s\n' "$YML" | grep -A1 "url: $DEBFILE" | grep 'sha512:' \
+                      | head -1 | awk '{print $2}' | tr -d '\r')
+            if [ -n "$SUM_B64" ]; then
+                WANT=$(printf '%s' "$SUM_B64" | base64 -d 2>/dev/null | xxd -p -c 999)
+                GOT=$(sha512sum "$CACHE/$DEBFILE" | awk '{print $1}')
+                if [ "$WANT" = "$GOT" ]; then
+                    echo "sha512 검증 통과"
+                else
+                    echo "★ sha512 불일치 — 받은 파일을 버립니다"
+                    rm -f "$CACHE/$DEBFILE"
+                fi
+            fi
+            if [ -f "$CACHE/$DEBFILE" ]; then
+                echo "=== [deb 3/3] 설치 (관리자 비밀번호 창이 뜹니다) ==="
+                if pkexec apt-get install -y "$CACHE/$DEBFILE"; then
+                    rm -f "$CACHE/$DEBFILE"
+                    dpkg -s orca-ide >/dev/null 2>&1 && DEB_INSTALLED=1
+                else
+                    echo "설치가 취소되었거나 실패했습니다 — AppImage 방식으로 넘어갑니다"
+                fi
+            fi
+        else
+            echo "다운로드 실패 — AppImage 방식으로 넘어갑니다"
+        fi
+    else
+        echo "릴리스 정보를 가져오지 못했습니다 — AppImage 방식으로 넘어갑니다"
+    fi
+fi
+
+if [ "$DEB_INSTALLED" = "1" ]; then
+    # dpkg 가 /usr/share/applications/orca-ide.desktop 과 아이콘을 이미 설치했다.
+    # 같은 desktop ID 가 시스템과 홈 양쪽에 있으면 COSMIC 런처에 앱이 두 번 뜬다
+    # (COSMIC 은 중복 제거를 하지 않는다). 그래서 홈 쪽 사본을 지운다.
+    if [ -f "$DESK_LOCAL" ]; then
+        rm -f "$DESK_LOCAL"
+        echo "로컬 중복 바로가기 제거: $DESK_LOCAL (시스템 패키지 것을 사용)"
+    fi
+    update-desktop-database "$APPS" 2>/dev/null || true
+else
 
 echo "=== [1/6] Orca AppImage 찾기 ==="
 FOUND=""
@@ -127,8 +189,12 @@ for C in "$APPDIR"/orca*.AppImage "$APPDIR"/Orca*.AppImage \
     FOUND="$C"; break
 done
 if [ -z "$FOUND" ]; then
-    echo "Orca AppImage 를 찾지 못했습니다."
-    echo "orca-linux.AppImage 를 ~/Downloads 또는 ~/Applications 에 받아둔 뒤 다시 눌러주세요."
+    echo "설치할 것을 찾지 못했습니다."
+    echo "  - 자동 설치(.deb)가 실패했고, 받아둔 AppImage 도 없습니다."
+    echo "  - 인터넷 연결을 확인한 뒤 다시 눌러보세요."
+    echo "  - 수동으로 받으려면: $REL/latest"
+    echo "    (orca-ide_*_amd64.deb 를 받아 더블클릭하거나,"
+    echo "     orca-linux.AppImage 를 ~/Downloads 에 두고 다시 누르세요)"
     exit 1
 fi
 echo "찾음: $FOUND"
@@ -185,6 +251,8 @@ update-desktop-database "$APPS" 2>/dev/null || true
 gtk-update-icon-cache -f -t "$ICONS" 2>/dev/null || true
 echo "등록: $APPS/orca-ide.desktop"
 
+fi
+
 echo "=== [5/6] 독(Dock) 즐겨찾기 등록 ==="
 DOCK_CHANGED=0
 if [ -f "$FAV" ]; then
@@ -221,7 +289,12 @@ else
 fi
 
 echo
-echo "완료: 런처와 독에서 Orca 를 실행할 수 있습니다."
+if [ "$DEB_INSTALLED" = "1" ]; then
+    echo "완료: apt 패키지(orca-ide)로 설치했습니다. 런처와 독에서 실행하세요."
+    echo "업데이트·제거는 apt 로 하면 됩니다."
+else
+    echo "완료: AppImage 를 런처와 독에 등록했습니다."
+fi
 echo "참고: 터미널에서 'orca' 를 치면 GNOME 스크린리더가 실행됩니다 (이름 충돌)."
 "#;
                 let t = Task::perform(async move { runner::run_stream(script).await }, AppsMsg::Done);
@@ -1109,43 +1182,45 @@ fn orca_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'static, Ap
     let icon_ok = status.map(|s| s.orca_icon_ok).unwrap_or(false);
     let dock_ok = status.map(|s| s.orca_dock_ok).unwrap_or(false);
 
+    let deb = status.map(|s| s.orca_deb_installed).unwrap_or(false);
     let has_appimage = appimage.is_some();
-    let registered = !desktop.is_empty();
-    let status_txt = if registered {
-        "● 런처 등록됨"
+    let registered = deb || !desktop.is_empty();
+
+    let status_txt = if deb {
+        "● 설치됨 (apt 패키지 orca-ide)"
+    } else if !desktop.is_empty() {
+        "● 런처 등록됨 (AppImage)"
     } else if has_appimage {
         "○ AppImage 있음 — 런처 미등록"
     } else {
-        "○ AppImage 없음"
+        "○ 미설치 — 누르면 공식 릴리스에서 받아 설치합니다"
     };
     let status_col = if registered { C_OK } else if has_appimage { C_WARN } else { C_DIM };
 
+    let kind = if deb { "deb" } else { "AppImage" };
     let title = if version.is_empty() {
-        "Orca (AppImage)".to_string()
+        "Orca".to_string()
     } else {
-        format!("Orca (AppImage) {version}")
+        format!("Orca {version} ({kind})")
     };
 
     let mut left = column![
         text(title).size(14).color(C_TEXT),
         Space::with_height(3),
-        text("에이전트 개발용 IDE — AppImage 라 런처·독 아이콘이 자동 등록되지 않는다").size(11).color(C_DIM),
+        text("에이전트 개발용 IDE — 공식 .deb 를 받아 설치하고 런처·독까지 등록한다").size(11).color(C_DIM),
         Space::with_height(4),
         text(status_txt).size(12).color(status_col),
     ];
 
-    if let Some(path) = &appimage {
+    if deb {
+        left = left.push(Space::with_height(2));
+        left = left.push(text("업데이트·제거는 apt 로 관리됩니다 (stablyai/orca 공식 패키지)").size(11).color(C_DIM));
+    } else if let Some(path) = &appimage {
         left = left.push(Space::with_height(2));
         left = left.push(text(format!("AppImage: {path}")).size(11).color(C_DIM));
-    } else {
-        left = left.push(Space::with_height(2));
-        left = left.push(
-            text("~/Downloads 또는 ~/Applications 에 orca-linux.AppImage 를 받아둔 뒤 설치를 누르세요.")
-                .size(11).color(C_WARN),
-        );
     }
 
-    if registered {
+    if !desktop.is_empty() {
         left = left.push(text(format!("바로가기: {desktop}")).size(11).color(C_DIM));
     }
 
@@ -1327,8 +1402,13 @@ async fn scan_apps() -> AppsStatus {
     let kakaotalk_installed = kakaotalk_launcher.is_some()
         || std::path::Path::new("/opt/kakaotalk/kakaotalk.exe").exists();
 
-    // Orca (AppImage) 정보 수집
-    // AppImage 는 .desktop 을 스스로 설치하지 않으므로, 파일 존재와 런처 등록을 따로 본다.
+    // Orca 정보 수집
+    // 공식 .deb 로 깔렸으면 dpkg 가 런처·아이콘을 이미 등록해 둔다.
+    // AppImage 는 .desktop 을 스스로 설치하지 않으므로 파일 존재와 등록을 따로 본다.
+    let orca_deb_installed = runner::run("bash", &["-c",
+        "dpkg -s orca-ide >/dev/null 2>&1"
+    ]).await.success;
+
     let orca_lookup = runner::run("bash", &["-c",
         "for C in $HOME/Applications/orca*.AppImage $HOME/Applications/Orca*.AppImage \
                   $HOME/Downloads/orca*.AppImage $HOME/Downloads/Orca*.AppImage \
@@ -1339,14 +1419,24 @@ async fn scan_apps() -> AppsStatus {
     let orca_appimage = orca_lookup.output.lines().next()
         .map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
+    // .deb 는 /usr/share, 수동 등록은 ~/.local/share 에 놓인다. 둘 다 본다.
     let orca_desk_lookup = runner::run("bash", &["-c",
-        "D=$HOME/.local/share/applications/orca-ide.desktop; [ -f \"$D\" ] && echo \"$D\" || true"
+        "for D in /usr/share/applications/orca-ide.desktop \
+                  $HOME/.local/share/applications/orca-ide.desktop; do \
+            [ -f \"$D\" ] && { echo \"$D\"; break; }; \
+         done"
     ]).await;
     let orca_desktop = orca_desk_lookup.output.lines().next()
         .map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
 
-    // 버전은 설치 때 .desktop 에 적어둔 줄에서 읽는다 (AppImage 를 다시 여는 것은 느리다).
-    let orca_version = if orca_desktop.is_some() {
+    // deb 면 dpkg 가 정본이다. AppImage 면 설치 때 .desktop 에 적어둔 줄을 읽는다
+    // (AppImage 를 열어 버전을 뽑는 것은 느리다).
+    let orca_version = if orca_deb_installed {
+        runner::run("bash", &["-c",
+            "dpkg-query -W -f='${Version}' orca-ide 2>/dev/null"
+        ]).await.output.lines().next()
+            .map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    } else if orca_desktop.is_some() {
         runner::run("bash", &["-c",
             "grep -h '^X-AppImage-Version=' $HOME/.local/share/applications/orca-ide.desktop \
              2>/dev/null | head -1 | cut -d= -f2-"
@@ -1355,7 +1445,8 @@ async fn scan_apps() -> AppsStatus {
     } else { None };
 
     let orca_icon_ok = runner::run("bash", &["-c",
-        "ls $HOME/.local/share/icons/hicolor/*/apps/orca-ide.png 2>/dev/null | head -1"
+        "ls $HOME/.local/share/icons/hicolor/*/apps/orca-ide.png \
+            /usr/share/icons/hicolor/*/apps/orca-ide.png 2>/dev/null | head -1"
     ]).await.output.lines().any(|s| !s.trim().is_empty());
 
     let orca_dock_ok = runner::run("bash", &["-c",
@@ -1371,6 +1462,7 @@ async fn scan_apps() -> AppsStatus {
         kakaotalk_wmclass_ok,
         kakaotalk_icon_ok,
         kakaotalk_ime_patched,
+        orca_deb_installed,
         orca_appimage,
         orca_version,
         orca_desktop,
