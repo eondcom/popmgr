@@ -60,6 +60,9 @@ Pop!_OS / COSMIC 데스크톱 관리 도구 — Rust + [Iced](https://github.com
 
 ### 앱 관리 탭
 - KakaoTalk Wine 설치 / 실행
+- Orca(AppImage) 런처·독 등록 — AppImage는 `.desktop`을 스스로 설치하지 않아
+  런처와 독에 아이콘이 뜨지 않는다. AppImage를 `~/Applications`로 정리하고
+  아이콘·바로가기·독 즐겨찾기를 한 번에 등록한다.
 - APT·Flatpak 패키지 검색 및 일괄 제거
 
 ---
