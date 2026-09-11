@@ -168,7 +168,59 @@ bluetoothctl connect C0:31:F2:BB:80:4A
 bluetoothctl disconnect C0:31:F2:BB:80:4A
 ```
 
-## 8. 버튼 재매핑은 어떻게?
+## 8. 연결은 됐는데 포인터가 밀리고 굼뜨다
+
+블루투스로 바꾼 뒤 "마우스가 밀리는 느낌"이 든다면, 커스텀 매핑 데몬을 쓰고 있는지
+확인해 보세요. 저는 `ktrackball` 을 쓰는데 여기서 한 번 더 걸렸습니다.
+
+원인은 **연결 방식에 따라 장치 이름이 바뀐다**는 것입니다.
+
+| 연결 | `/proc/bus/input/devices` 의 이름 |
+|---|---|
+| 동글(2.4GHz) | `Kensington Expert Wireless TB Mouse` |
+| 블루투스 | `ExpertBT5.0 Mouse` |
+
+설정이 `device_match = ["Expert Wireless", "Slimblade"]` 였으니 BT 이름에 안 걸립니다.
+데몬이 장치를 못 찾고 3초마다 재시도만 반복하면서, 포인터 배율(`speed_factor = 1.82`)과
+버튼 매핑이 전부 적용되지 않았습니다. 배율이 빠지니 포인터가 느려져 "밀린다"고 느껴진
+것입니다.
+
+```bash
+sudo sed -i 's|^device_match = .*|device_match = ["Expert Wireless", "Slimblade", "ExpertBT"]|' \
+  /etc/ktrackball/config.toml
+sudo systemctl restart ktrackball.service
+```
+
+### 진단할 때 주의 — `pgrep -x` 에 속지 마세요
+
+이 데몬은 파이썬 스크립트라 실제 프로세스명이 `python3` 입니다. 그래서
+`pgrep -x ktrackball`(프로세스명 완전일치)은 **데몬이 멀쩡히 돌아가도 빈 결과**를
+돌려줍니다. `systemctl is-active` 는 `active` 로 나오니 더 헷갈립니다.
+
+제대로 보려면:
+
+```bash
+pgrep -af trackball_mapper.py            # 전체 명령줄로 검색
+journalctl -u ktrackball -n 20           # 이쪽이 가장 확실
+```
+
+로그에서 이렇게 나오면 **실패**한 것입니다:
+
+```
+[ktrackball] device not found, retrying in 3s...
+```
+
+이렇게 나오면 **정상**입니다:
+
+```
+[ktrackball] starting; target device: *expert wireless*, *slimblade*, *expertbt*
+[ktrackball] opened /dev/input/event25 (ExpertBT5.0 Mouse)
+```
+
+`/proc/bus/input/devices` 에 `ktrackball-virtual` 이 보이는지로도 확인됩니다. 이 가상
+장치가 있어야 배율·버튼매핑이 먹습니다.
+
+## 9. 버튼 재매핑은 어떻게?
 
 KensingtonWorks 가 없으니 리눅스 기본 도구를 씁니다.
 
@@ -202,6 +254,8 @@ usb usb1-port2: unable to enumerate USB device
 | 켄징턴 이름으로 안 찾아진다 | `ExpertBT5.0` 으로 광고함 |
 | `pair` 가 조용히 실패한다 | `bluetoothctl` 재실행 → 발견 캐시 `DEL` |
 | 매번 다시 페어링해야 한다 | `trust` 를 안 함 |
+| 연결은 됐는데 포인터가 밀린다 | 매핑 데몬의 `device_match` 가 BT 이름과 불일치 |
+| 데몬이 안 떠 있는 것 같다 | `pgrep -x` 로 봐서 그럼 (실제 프로세스명은 `python3`) |
 | 블루투스로 아예 전환이 안 된다 | 동글이 꽂혀 있음 |
 | 드라이버가 없는 것 같다 | 드라이버는 원래 필요 없음 (표준 HID) |
 

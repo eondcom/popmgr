@@ -752,9 +752,16 @@ async fn scan_usb() -> UsbStatus {
         }
     }
 
-    // ktrackball PID
-    let ktb = runner::run("pgrep", &["-x", "ktrackball"]).await;
-    let ktrackball_pid = ktb.output.trim().parse::<u32>().ok();
+    // ktrackball PID.
+    // 실행 파일은 python3 이고 ktrackball 은 스크립트 경로에만 나타나므로
+    // `pgrep -x ktrackball`(프로세스명 완전일치)로는 절대 잡히지 않는다.
+    // 전체 명령줄(-f)에서 mapper 스크립트 경로를 찾아야 한다.
+    // 패턴에 경로를 포함시켜 "trackball_mapper.py" 문자열을 인자로 가진 다른
+    // 프로세스(예: 이 이름을 grep 하는 셸)가 섞이지 않게 한다.
+    let ktb = runner::run("pgrep", &["-f", r"python3?\s+/opt/ktrackball/trackball_mapper\.py"]).await;
+    let ktrackball_pid = ktb.output
+        .lines()
+        .find_map(|l| l.trim().parse::<u32>().ok());
 
     let pointer_speed = read_pointer_speed();
     let tb_speed_factor = read_tb_speed_factor();
