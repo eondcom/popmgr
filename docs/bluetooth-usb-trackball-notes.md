@@ -1,5 +1,64 @@
 # Kensington trackball Bluetooth/USB switching notes
 
+> **RESOLVED 2026-09-11.** Pairing succeeded on Pop!_OS 24.04 / BlueZ 5.72.
+> The July 14 findings below were correct about the host stack being healthy,
+> but two assumptions were wrong. Read this section first; the original
+> investigation is kept underneath for context.
+>
+> **What actually blocked it**
+>
+> 1. **Pairing mode is entered by holding the four top buttons together for
+>    ~3 seconds.** There is no dedicated pairing button on the underside.
+>    Guidance derived from the `K72359WW` string in `lsusb` was wrong: that
+>    string identifies the 2.4 GHz *receiver*, not the trackball body, and says
+>    nothing about its Bluetooth capability or button layout.
+> 2. **The device advertises as `ExpertBT5.0` / `ExpertBT3.0`, never as
+>    "Kensington".** Filtering scan output by vendor name finds nothing. Match
+>    on HID UUID `00001812`, `Icon: input-mouse`, or `Appearance: 0x03c2`
+>    instead.
+> 3. **`bluetoothctl` must be driven as one long-lived session.** Spawning it
+>    per command makes BlueZ flush the discovery cache (`[DEL]` lines) the
+>    moment `scan on` exits, so a following `pair` aborts right after printing
+>    `Attempting to pair`. This is the caveat already noted at the bottom of
+>    this file, and it is the single biggest time sink.
+>
+> **Confirmed device facts**
+>
+> | Field | Value |
+> |---|---|
+> | BT 5.0 channel | `C0:31:F2:BB:80:4A` — `ExpertBT5.0` (use this one) |
+> | BT 3.0 channel | `12:34:D0:74:62:20` — `ExpertBT3.0` |
+> | Appearance | `0x03c2` (mouse) |
+> | Icon | `input-mouse` |
+> | UUID | `00001812` (HID over GATT) |
+> | Input nodes once connected | `ExpertBT5.0 Mouse`, `ExpertBT5.0 Consumer Control` |
+> | 2.4 GHz receiver | `047d:8018` |
+>
+> **Working sequence** (implemented in `src/ui/usb.rs::bt_pair_flow`):
+>
+> ```bash
+> coproc BTC { stdbuf -oL bluetoothctl 2>&1; }
+> exec 3>&"${BTC[1]}"
+> echo "power on" >&3;      sleep 1
+> echo "agent on" >&3;      sleep 1
+> echo "default-agent" >&3; sleep 1
+> echo "scan on" >&3;       sleep 10
+> echo "pair $MAC" >&3;     sleep 12
+> echo "trust $MAC" >&3;    sleep 3     # required for auto-reconnect
+> echo "connect $MAC" >&3;  sleep 10
+> ```
+>
+> **Still true: mode switching cannot be automated.** The 2.4 GHz/Bluetooth
+> channel is chosen by device firmware through physical buttons. Kensington has
+> no host-side channel protocol comparable to Logitech Unifying, so popmgr
+> ships pairing/connect/disconnect only — never a "switch to USB" button. Leave
+> the receiver unplugged while pairing, or the trackball stays on 2.4 GHz.
+>
+> A user-facing writeup lives in
+> [`tip-kensington-trackball-bluetooth-linux.md`](tip-kensington-trackball-bluetooth-linux.md).
+
+## Original investigation (July 14, 2026)
+
 This note records the July 14, 2026 investigation for a Kensington-style
 trackball that would not appear during Bluetooth pairing. Use it as context
 when adding a popmgr feature for switching a pointing device between USB,
@@ -94,7 +153,7 @@ echo '<USB_SYSFS_NAME>' | sudo tee /sys/bus/usb/drivers/usb/unbind
 Use unbind only when the target is confirmed, because it can detach a hub,
 touchscreen, keyboard, or unrelated device.
 
-## Feature ideas for popmgr
+## Feature ideas for popmgr (implemented 2026-09-11 in the USB tab)
 
 - Add a Bluetooth/USB switching card under the USB tab or a new input-devices
   section.
