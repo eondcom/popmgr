@@ -27,6 +27,9 @@ Pop!_OS / COSMIC 데스크톱 관리 도구 — Rust + [Iced](https://github.com
 - **snap 누출 감지**: 현재 환경의 `GTK_IM_MODULE_FILE` 이 snap 캐시(`~/snap/.../immodules.cache`)를 가리키면 경고. snap 앱이 띄운 셸에서 IDE 를 실행하면 시스템 GTK IM 모듈을 못 찾아 한글 입력이 깨지는 사고를 미리 차단.
 - **LibreOffice 한글 입력 호환 모드**: COSMIC Wayland에서 LibreOffice가 fcitx 입력 컨텍스트를 만들지 못하는 상태를 실행 프로세스에서 진단. 버튼 한 번으로 시스템 파일은 건드리지 않고 사용자 범위 desktop 런처에 X11/XIM 입력 경로를 적용하거나 해제.
 - **JetBrains IDE vmoptions 자동 패치**: `~/.config/JetBrains/<IDE>/*.vmoptions` 파일들을 스캔해 XIM 안정화 옵션(`-Dawt.toolkit.name=XToolkit`, `-Drecreate.x11.input.method=true`) 누락 여부를 표시. "패치" 버튼으로 백업 후 자동 추가 — IntelliJ Ultimate 의 `XInputMethod.setXICFocusNative` 133초 freeze 같은 사고를 예방.
+- **fcitx5 한/영 상태 유지 설정**: `~/.config/fcitx5/config` 의 `ShareInputState`/`ActiveByDefault`/`AltTriggerKeys` 를 진단. fcitx5 기본값은 창마다 한/영 상태를 따로 기억하고 새 창을 영문으로 시작해 "다른 창에 갔다 오면 영문만 입력되는" 원인이 된다. "고치기" 버튼(또는 `popmgr --fix-fcitx5-behavior`)으로 `ShareInputState=All`, `ActiveByDefault=True`, 왼쪽 Shift 단독 탭 영문 전환 해제를 적용하고 `fcitx5-remote -r` 로 **재시작 없이** 반영.
+- **fcitx5 툴킷 프론트엔드 누락 진단**: `QT_IM_MODULE=fcitx` 인데 `fcitx5-frontend-qt5/qt6` 같은 IM 모듈 패키지가 없으면 경고 + 설치 버튼.
+- **IME 재시작 버튼**: `/etc/environment` 재작성(pkexec) 없이 활성 IME 데몬만 재시작.
 
 ### USB 탭
 - USB 장치 전체 목록 (Kensington 트랙볼·Realforce 키보드 강조)
@@ -132,6 +135,14 @@ sudo cp /usr/bin/cosmic-comp.bak /usr/bin/cosmic-comp
 - 폰트: NanumSquare (UI) + NanumGothic (한글 폴백)
 
 ## 변경 이력
+
+### 2026-09-13 — fcitx5 한/영 상태 유지
+- fcitx5 전역 설정 진단/교정 카드 추가 (`ShareInputState=All`, `ActiveByDefault=True`, `AltTriggerKeys=` 빈 값).
+  - 이유: "다른 창 왔다갔다하면 영문만 입력되고 popmgr 재설정해야 돌아온다" 제보. 원인은 fcitx5 기본값 `ShareInputState=No`(입력 컨텍스트마다 상태 분리) + `ActiveByDefault=False`(새 컨텍스트는 영문 시작). 기존 "적용"은 데몬을 재시작해 모든 컨텍스트를 새로 만들므로 오히려 전부 영문으로 리셋하고 XIM 앱 연결까지 끊었다.
+  - `AltTriggerKeys` 기본값 `Shift_L` 은 왼쪽 Shift 를 단독으로 눌렀다 떼면 영문으로 바뀌는 동작 — "이유 모를 영문 전환"의 또 다른 원인이라 함께 해제. 섹션만 지우면 fcitx5 가 기본값으로 되돌리므로 `[Hotkey]` 에 `AltTriggerKeys=` 를 명시.
+  - 파일 수정 후 `fcitx5-remote -r` 로 재로드하고 D-Bus `GetConfig` 로 실제 반영을 확인 — 재시작 없음.
+- "적용" 시 fcitx5 면 위 설정을 함께 보장. 설치 패키지에 `fcitx5-frontend-gtk4/qt5/qt6` 추가, 누락 진단 카드 추가.
+- "IME 재시작" 버튼 추가 (pkexec 없이 데몬만 재시작). CLI `popmgr --fix-fcitx5-behavior` 추가.
 
 ### 2026-06-19 — 디스플레이 탭 신설 (모니터 밝기)
 - 내장(logind)·외부(ddcutil DDC/CI) 모니터 밝기·명암 조절 탭 추가. 외부 모니터는 백라이트 sysfs가 없어 COSMIC 상단바에 안 뜨던 것을 보완.
