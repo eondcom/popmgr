@@ -864,7 +864,8 @@ fn parse_fcitx5_behavior(content: &str) -> Fcitx5Behavior {
     let mut active = false;
     // fcitx5는 빈 키 목록을 부모 섹션의 `AltTriggerKeys=` 로, 비어 있지 않으면
     // `[Hotkey/AltTriggerKeys]` 하위 섹션으로 저장한다. 둘 다 없으면 기본값(Shift_L).
-    let mut alt_keys: Option<Vec<String>> = None;
+    let mut has_alt_trigger_keys = false;
+    let mut shift_alt_trigger = false;
     let mut section = String::new();
     for raw in content.lines() {
         let line = raw.trim();
@@ -873,8 +874,8 @@ fn parse_fcitx5_behavior(content: &str) -> Fcitx5Behavior {
         }
         if line.starts_with('[') && line.ends_with(']') {
             section = line[1..line.len() - 1].to_string();
-            if section == "Hotkey/AltTriggerKeys" && alt_keys.is_none() {
-                alt_keys = Some(Vec::new());
+            if section == "Hotkey/AltTriggerKeys" {
+                has_alt_trigger_keys = true;
             }
             continue;
         }
@@ -887,21 +888,18 @@ fn parse_fcitx5_behavior(content: &str) -> Fcitx5Behavior {
                 _ => {}
             },
             "Hotkey" if k == "AltTriggerKeys" => {
-                let keys = alt_keys.get_or_insert_with(Vec::new);
-                if !v.is_empty() {
-                    keys.push(v.to_string());
-                }
+                has_alt_trigger_keys = true;
+                shift_alt_trigger |= v == "Shift_L";
             }
             "Hotkey/AltTriggerKeys" => {
-                alt_keys.get_or_insert_with(Vec::new).push(v.to_string());
+                shift_alt_trigger |= v == "Shift_L";
             }
             _ => {}
         }
     }
-    let shift_alt_trigger = match alt_keys {
-        None => true,
-        Some(keys) => keys.iter().any(|k| k.contains("Shift_L")),
-    };
+    if !has_alt_trigger_keys {
+        shift_alt_trigger = true;
+    }
     Fcitx5Behavior { share_input_state: share, active_by_default: active, shift_alt_trigger }
 }
 
@@ -924,13 +922,26 @@ fn set_ini_key(sections: &mut Vec<IniSection>, section: &str, key: &str, value: 
             sections.len() - 1
         }
     };
-    let sec = &mut sections[idx];
     let new_line = format!("{key}={value}");
-    let existing = sec.lines.iter_mut().find(|l| {
-        l.trim().split_once('=').map(|(k, _)| k.trim() == key).unwrap_or(false)
+    let sec = &mut sections[idx];
+    let mut found = false;
+    sec.lines.retain(|line| {
+        if line.trim().split_once('=').map(|(existing, _)| existing.trim() == key).unwrap_or(false) {
+            if found {
+                false
+            } else {
+                found = true;
+                true
+            }
+        } else {
+            true
+        }
     });
-    if let Some(l) = existing {
-        *l = new_line;
+    if found {
+        let existing = sec.lines.iter_mut().find(|line| {
+            line.trim().split_once('=').map(|(existing, _)| existing.trim() == key).unwrap_or(false)
+        }).expect("retained first matching key");
+        *existing = new_line;
     } else {
         // 섹션 끝의 빈 줄(다음 섹션과의 구분) 앞에 넣는다
         let mut at = sec.lines.len();
@@ -953,10 +964,37 @@ fn patch_fcitx5_behavior(content: &str) -> String {
             sections.last_mut().unwrap().lines.push(raw.to_string());
         }
     }
-    // 왼쪽 Shift 단독 탭 → 영문 전환 (AltTriggerKeys=Shift_L) 제거.
-    // 섹션을 지우기만 하면 fcitx5가 기본값(Shift_L)으로 되돌리므로 빈 키를 명시한다.
-    sections.retain(|s| s.header.as_deref() != Some("Hotkey/AltTriggerKeys"));
-    set_ini_key(&mut sections, "Hotkey", "AltTriggerKeys", "");
+    // 왼쪽 Shift 단독 탭 → 영문 전환 (AltTriggerKeys=Shift_L)만 제거한다.
+    // 다른 AltTriggerKeys는 보존하고, 목록 키는 fcitx5 형식대로 다시 번호를 매긴다.
+    let mut retained_alt_trigger_keys = false;
+    for section in &mut sections {
+        if section.header.as_deref() != Some("Hotkey/AltTriggerKeys") {
+            continue;
+        }
+        let mut entry_index = 0usize;
+        section.lines.retain_mut(|line| {
+            let Some((key, value)) = line.trim().split_once('=') else {
+                return true;
+            };
+            if key.trim().parse::<usize>().is_err() {
+                return true;
+            }
+            if value.trim() == "Shift_L" {
+                return false;
+            }
+            *line = format!("{entry_index}={}", value.trim());
+            entry_index += 1;
+            true
+        });
+        retained_alt_trigger_keys |= entry_index > 0;
+    }
+    if retained_alt_trigger_keys {
+        sections.retain(|section| section.header.as_deref() != Some("Hotkey/AltTriggerKeys") || !section.lines.is_empty());
+    } else {
+        // 섹션을 지우기만 하면 fcitx5가 기본값(Shift_L)으로 되돌리므로 빈 키를 명시한다.
+        sections.retain(|section| section.header.as_deref() != Some("Hotkey/AltTriggerKeys"));
+        set_ini_key(&mut sections, "Hotkey", "AltTriggerKeys", "");
+    }
     // 모든 창이 한/영 상태를 공유하고, 새 창은 한글로 시작
     set_ini_key(&mut sections, "Behavior", "ShareInputState", "All");
     set_ini_key(&mut sections, "Behavior", "ActiveByDefault", "True");
@@ -973,7 +1011,35 @@ fn patch_fcitx5_behavior(content: &str) -> String {
             out.push('\n');
         }
     }
+    if !content.is_empty() && !content.ends_with('\n') {
+        out.pop();
+    }
     out
+}
+
+fn write_fcitx5_config(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let permissions = match std::fs::metadata(path) {
+        Ok(metadata) => metadata.permissions(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::Permissions::from_mode(0o600)
+        }
+        Err(error) => return Err(error),
+    };
+    let tmp = path.with_extension("popmgr-tmp");
+    let result = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        std::fs::set_permissions(&tmp, permissions)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// 실행 중인 fcitx5가 실제로 쓰는 ShareInputState 값을 D-Bus 로 읽는다.
@@ -1001,14 +1067,8 @@ pub async fn fix_fcitx5_behavior() -> CmdResult {
                 return CmdResult { success: false, output: format!("설정 디렉토리 생성 실패 ({}): {e}", dir.display()) };
             }
         }
-        // fcitx5 자체와 같은 방식(임시 파일 → rename)으로 원자적 교체
-        let tmp = path.with_extension("popmgr-tmp");
-        if let Err(e) = tokio::fs::write(&tmp, &patched).await {
-            return CmdResult { success: false, output: format!("설정 쓰기 실패 ({}): {e}", tmp.display()) };
-        }
-        if let Err(e) = tokio::fs::rename(&tmp, &path).await {
-            let _ = tokio::fs::remove_file(&tmp).await;
-            return CmdResult { success: false, output: format!("설정 교체 실패 ({}): {e}", path.display()) };
+        if let Err(e) = write_fcitx5_config(&path, &patched) {
+            return CmdResult { success: false, output: format!("설정 쓰기 실패 ({}): {e}", path.display()) };
         }
         out.push_str(&format!("{} 갱신\n", path.display()));
     } else {
@@ -1154,7 +1214,21 @@ fn fcitx5_frontend_card(missing: &[&'static str], disabled: bool) -> Element<'st
 
 #[cfg(test)]
 mod fcitx5_behavior_tests {
-    use super::{parse_fcitx5_behavior, patch_fcitx5_behavior};
+    use super::{parse_fcitx5_behavior, patch_fcitx5_behavior, write_fcitx5_config};
+    use std::os::unix::fs::PermissionsExt;
+
+    fn temp_config_path(name: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after Unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "popmgr-fcitx5-behavior-{}-{unique}",
+            std::process::id(),
+        ));
+        std::fs::create_dir_all(&dir).expect("create temporary test directory");
+        dir.join(name)
+    }
 
     // 실제 노트북의 ~/.config/fcitx5/config 요약 (fcitx5 5.1.7 기본값 그대로)
     const REAL: &str = "[Hotkey]\n\
@@ -1235,6 +1309,82 @@ DefaultPageSize=5\n";
         let b = parse_fcitx5_behavior(content);
         assert!(!b.shift_alt_trigger);
         assert!(b.is_ok());
+    }
+
+    #[test]
+    fn parses_shift_l_alt_trigger_entry() {
+        let content = "[Hotkey/AltTriggerKeys]\n0=Shift_L\n";
+        assert!(parse_fcitx5_behavior(content).shift_alt_trigger);
+    }
+
+    #[test]
+    fn parses_shift_l_among_other_alt_trigger_entries() {
+        let content = "[Hotkey/AltTriggerKeys]\n0=Shift_L\n1=Shift_R\n";
+        assert!(parse_fcitx5_behavior(content).shift_alt_trigger);
+    }
+
+    #[test]
+    fn does_not_treat_shift_r_as_shift_l_alt_trigger() {
+        let content = "[Hotkey/AltTriggerKeys]\n0=Shift_R\n";
+        assert!(!parse_fcitx5_behavior(content).shift_alt_trigger);
+    }
+
+    #[test]
+    fn does_not_treat_control_shift_l_as_shift_l_alt_trigger() {
+        let content = "[Hotkey/AltTriggerKeys]\n0=Control+Shift_L\n";
+        assert!(!parse_fcitx5_behavior(content).shift_alt_trigger);
+    }
+
+    #[test]
+    fn patch_replaces_first_duplicate_key_and_removes_the_rest() {
+        let content = "[Behavior]\nShareInputState=No\nShareInputState=Program\nActiveByDefault=False\n";
+        let patched = patch_fcitx5_behavior(content);
+        assert_eq!(patched.matches("ShareInputState=").count(), 1);
+        assert!(patched.contains("ShareInputState=All\n"));
+    }
+
+    #[test]
+    fn patch_is_independent_of_section_order() {
+        let content = "[Behavior]\nActiveByDefault=False\nShareInputState=No\n\n[Hotkey/AltTriggerKeys]\n0=Shift_R\n";
+        let patched = patch_fcitx5_behavior(content);
+        assert!(parse_fcitx5_behavior(&patched).is_ok(), "{patched}");
+        assert!(patched.contains("[Hotkey/AltTriggerKeys]\n0=Shift_R\n"));
+    }
+
+    #[test]
+    fn patch_without_trailing_newline_is_idempotent() {
+        let content = "[Hotkey/AltTriggerKeys]\n0=Shift_L\n1=Shift_R\n[Behavior]\nShareInputState=No\nActiveByDefault=False";
+        let once = patch_fcitx5_behavior(content);
+        assert!(!once.ends_with('\n'));
+        assert_eq!(patch_fcitx5_behavior(&once), once);
+    }
+
+    #[test]
+    fn write_fcitx5_config_preserves_existing_permissions() {
+        let path = temp_config_path("config");
+        std::fs::write(&path, "old").expect("write existing config");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("set existing config permissions");
+        write_fcitx5_config(&path, "new").expect("replace config");
+        assert_eq!(std::fs::metadata(&path).expect("config metadata").permissions().mode() & 0o777, 0o600);
+        std::fs::remove_dir_all(path.parent().expect("temporary directory")).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn write_fcitx5_config_uses_0600_for_new_file() {
+        let path = temp_config_path("config");
+        write_fcitx5_config(&path, "new").expect("write config");
+        assert_eq!(std::fs::metadata(&path).expect("config metadata").permissions().mode() & 0o777, 0o600);
+        std::fs::remove_dir_all(path.parent().expect("temporary directory")).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn write_fcitx5_config_writes_the_given_content() {
+        let path = temp_config_path("config");
+        let content = "[Behavior]\nShareInputState=All\n";
+        write_fcitx5_config(&path, content).expect("write config");
+        assert_eq!(std::fs::read_to_string(&path).expect("read config"), content);
+        std::fs::remove_dir_all(path.parent().expect("temporary directory")).expect("remove temporary directory");
     }
 
     #[test]
