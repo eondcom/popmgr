@@ -4,6 +4,7 @@ pub mod cosmic_tweaks;
 pub mod disk;
 pub mod display;
 pub mod ime;
+pub mod monitor;
 pub mod power;
 pub mod printer;
 pub mod usb;
