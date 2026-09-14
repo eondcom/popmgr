@@ -96,6 +96,9 @@ fn main() -> iced::Result {
     if args.get(1).map(|s| s.as_str()) == Some("--turbo") {
         std::process::exit(monitor::turbo_cli(&args));
     }
+    if args.get(1).map(|s| s.as_str()) == Some("--record-toggle") {
+        std::process::exit(ui::apps::record_toggle_cli());
+    }
 
     if let Err(msg) = acquire_single_instance_lock() {
         eprintln!("{msg}");

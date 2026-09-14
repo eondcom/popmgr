@@ -372,14 +372,14 @@ fn shell_quote(value: &str) -> String {
 }
 
 #[derive(Debug, Clone)]
-struct ShortcutEntry {
+pub(crate) struct ShortcutEntry {
     modifiers: Vec<String>,
     key: String,
     spawn: Option<String>,
     range: std::ops::Range<usize>,
 }
 
-fn parse_shortcut_entries(content: &str) -> Vec<ShortcutEntry> {
+pub(crate) fn parse_shortcut_entries(content: &str) -> Vec<ShortcutEntry> {
     let Some((open, close)) = shortcut_map_bounds(content) else {
         return Vec::new();
     };
@@ -513,7 +513,7 @@ fn parse_quoted(value: &str) -> Option<String> {
     None
 }
 
-fn is_target_shortcut(entry: &ShortcutEntry, key: &str) -> bool {
+pub(crate) fn is_target_shortcut(entry: &ShortcutEntry, key: &str) -> bool {
     entry.key == key
         && entry.modifiers.len() == 2
         && entry.modifiers.iter().any(|modifier| modifier == "Ctrl" || modifier == "Control")
@@ -548,7 +548,7 @@ fn shortcut_updates(binary: Option<&std::path::Path>) -> Vec<(&'static str, Stri
     ]
 }
 
-fn write_shortcut_updates(
+pub(crate) fn write_shortcut_updates(
     path: &std::path::Path,
     updates: &[(&str, String)],
 ) -> std::io::Result<()> {
@@ -567,7 +567,7 @@ fn write_shortcut_updates(
     std::fs::write(path, updated)
 }
 
-fn replace_shortcut_entries(content: &str, updates: &[(&str, String)]) -> String {
+pub(crate) fn replace_shortcut_entries(content: &str, updates: &[(&str, String)]) -> String {
     let entries = parse_shortcut_entries(content);
     let Some((_, close)) = shortcut_map_bounds(content) else {
         return content.to_string();
