@@ -25,7 +25,11 @@ impl ImeKind {
     fn pkg(&self) -> &[&'static str] {
         match self {
             ImeKind::Ibus   => &["ibus", "ibus-hangul"],
-            ImeKind::Fcitx5 => &["fcitx5", "fcitx5-hangul", "fcitx5-frontend-gtk3"],
+            ImeKind::Fcitx5 => &[
+                "fcitx5", "fcitx5-hangul",
+                "fcitx5-frontend-gtk3", "fcitx5-frontend-gtk4",
+                "fcitx5-frontend-qt5", "fcitx5-frontend-qt6",
+            ],
             ImeKind::Kime   => &[],  // GitHub Release에서 설치
         }
     }
@@ -67,6 +71,32 @@ pub struct JetBrainsVmOptions {
     pub has_recreate_xim: bool,
 }
 
+/// fcitx5 전역 설정(~/.config/fcitx5/config)의 한/영 상태 정책.
+/// fcitx5 기본값(ShareInputState=No, ActiveByDefault=False)은 창(입력 컨텍스트)마다
+/// 상태를 따로 기억하고 새 컨텍스트를 영문으로 시작하므로, 다른 창에 갔다 오거나
+/// 데몬이 재시작되면 "영문만 입력되는" 증상이 된다.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fcitx5Behavior {
+    pub share_input_state: String, // "All" 이어야 모든 창이 한/영 상태를 공유
+    pub active_by_default: bool,   // true 여야 새 창이 한글로 시작
+    pub shift_alt_trigger: bool,   // AltTriggerKeys=Shift_L: 왼쪽 Shift 단독 탭이 영문 전환
+}
+
+impl Fcitx5Behavior {
+    fn is_ok(&self) -> bool {
+        self.share_input_state == "All" && self.active_by_default && !self.shift_alt_trigger
+    }
+}
+
+/// 툴킷별 fcitx5 IM 모듈. GTK_IM_MODULE/QT_IM_MODULE=fcitx 인데 모듈 패키지가 없으면
+/// 그 툴킷 앱은 fcitx5에 붙지 못해 한글 입력이 안 되거나 불안정하다.
+const FCITX5_FRONTEND_PKGS: &[(&str, &str)] = &[
+    ("fcitx5-frontend-gtk3", "GTK3 (Chrome, Firefox 등)"),
+    ("fcitx5-frontend-gtk4", "GTK4"),
+    ("fcitx5-frontend-qt5",  "Qt5 (VLC, OBS 등)"),
+    ("fcitx5-frontend-qt6",  "Qt6"),
+];
+
 #[derive(Debug, Clone)]
 pub struct ImeStatus {
     pub installed_ibus: bool,
@@ -89,6 +119,10 @@ pub struct ImeStatus {
     pub libreoffice_running_wayland: bool,
     pub libreoffice_fcitx_module_loaded: bool,
     pub libreoffice_compat_installed: bool,
+    // fcitx5 전역 설정의 한/영 상태 정책 (fcitx5 활성일 때만 Some)
+    pub fcitx5_behavior: Option<Fcitx5Behavior>,
+    // fcitx5 활성인데 미설치인 툴킷 프론트엔드(IM 모듈) 패키지
+    pub fcitx5_missing_frontends: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +141,9 @@ pub enum ImeMsg {
     UninstallResumeHook,
     InstallLibreOfficeCompat,
     UninstallLibreOfficeCompat,
+    FixFcitx5Behavior,
+    InstallFcitx5Frontends,
+    RestartDaemon,
     Done(CmdResult),
 }
 
@@ -165,11 +202,7 @@ impl ImeState {
                 (reconnect_task, None)
             }
             ImeMsg::AutoReconnect(kind) => {
-                let cmd = match &kind {
-                    ImeKind::Kime   => "pkill -x kime 2>/dev/null; sleep 0.2; kime &",
-                    ImeKind::Ibus   => "pkill -x ibus-daemon 2>/dev/null; sleep 0.2; ibus-daemon -drxR &",
-                    ImeKind::Fcitx5 => "pkill -x fcitx5 2>/dev/null; sleep 0.2; fcitx5 -d --replace &",
-                };
+                let cmd = daemon_restart_cmd(&kind);
                 let dbus_keys = kind.env_lines().iter().map(|(k,_)| *k).collect::<Vec<_>>().join(" ");
                 let full = format!("{cmd}; dbus-update-activation-environment --systemd {dbus_keys} 2>/dev/null");
                 let t = Task::perform(
@@ -284,6 +317,37 @@ impl ImeState {
                 );
                 (task, None)
             }
+            ImeMsg::FixFcitx5Behavior => {
+                self.running = Some("fcitx5 한/영 상태 유지 설정 적용 중...".into());
+                let task = Task::perform(
+                    async { fix_fcitx5_behavior().await },
+                    ImeMsg::Done,
+                );
+                (task, None)
+            }
+            ImeMsg::InstallFcitx5Frontends => {
+                let pkgs = self.status.as_ref()
+                    .map(|s| s.fcitx5_missing_frontends.clone())
+                    .unwrap_or_default();
+                self.running = Some("fcitx5 프론트엔드 설치 중...".into());
+                let task = Task::perform(
+                    async move { install_fcitx5_frontends(pkgs).await },
+                    ImeMsg::Done,
+                );
+                (task, None)
+            }
+            // pkexec 없이 데몬만 재시작 ("적용"은 /etc/environment 재작성까지 하므로 매번 비밀번호를 묻는다)
+            ImeMsg::RestartDaemon => {
+                let kind = self.status.as_ref()
+                    .and_then(|s| s.active.clone())
+                    .unwrap_or_else(|| self.selected.clone());
+                self.running = Some(format!("{} 재시작 중...", kind.label()));
+                let task = Task::perform(
+                    async move { restart_ime_daemon(kind).await },
+                    ImeMsg::Done,
+                );
+                (task, None)
+            }
             ImeMsg::Done(r) => {
                 self.running = None;
                 let refresh = Task::perform(async { scan_ime_status().await }, ImeMsg::Refreshed);
@@ -336,6 +400,16 @@ impl ImeState {
             let daemon_col = if st.daemon_running.is_some() { C_OK } else { C_WARN };
             col = col.push(text(daemon_txt).size(12).color(daemon_col));
 
+            // ── fcitx5 전용 진단 ──────────────────────────────
+            if let Some(ref beh) = st.fcitx5_behavior {
+                col = col.push(Space::with_height(14));
+                col = col.push(fcitx5_behavior_card(beh, is_running));
+            }
+            if !st.fcitx5_missing_frontends.is_empty() {
+                col = col.push(Space::with_height(14));
+                col = col.push(fcitx5_frontend_card(&st.fcitx5_missing_frontends, is_running));
+            }
+
             col = col.push(Space::with_height(14));
             col = col.push(resume_hook_card(st.resume_hook_installed, is_running));
 
@@ -368,6 +442,8 @@ impl ImeState {
             container(
                 row![
                     Space::with_width(Length::Fill),
+                    action_btn("IME 재시작", ImeMsg::RestartDaemon, !is_running, C_DIM),
+                    Space::with_width(8),
                     action_btn("적용", ImeMsg::Apply, !is_running, C_BLUE),
                 ]
             )
@@ -513,6 +589,20 @@ async fn scan_ime_status() -> ImeStatus {
     // 진단: 절전 복귀 IME 재시작 훅 설치 여부
     let resume_hook_installed = detect_resume_hook();
 
+    // 진단: fcitx5 전역 설정의 한/영 상태 정책 + 툴킷 프론트엔드 누락
+    let (fcitx5_behavior, fcitx5_missing_frontends) = if active == Some(ImeKind::Fcitx5) {
+        let content = tokio::fs::read_to_string(fcitx5_config_path()).await.unwrap_or_default();
+        let mut missing = Vec::new();
+        for (pkg, _) in FCITX5_FRONTEND_PKGS {
+            if !pkg_installed(pkg).await {
+                missing.push(*pkg);
+            }
+        }
+        (Some(parse_fcitx5_behavior(&content)), missing)
+    } else {
+        (None, Vec::new())
+    };
+
     let libreoffice_installed = which_exists("libreoffice").await;
     let (libreoffice_running_wayland, libreoffice_fcitx_module_loaded) =
         detect_running_libreoffice_ime();
@@ -525,6 +615,7 @@ async fn scan_ime_status() -> ImeStatus {
         resume_hook_installed,
         libreoffice_installed, libreoffice_running_wayland,
         libreoffice_fcitx_module_loaded, libreoffice_compat_installed,
+        fcitx5_behavior, fcitx5_missing_frontends,
     }
 }
 
@@ -706,6 +797,600 @@ async fn uninstall_resume_hook() -> CmdResult {
         CmdResult { success: true, output: format!("Resume 훅 제거: {RESUME_HOOK_PATH}") }
     } else {
         r
+    }
+}
+
+
+// ── IME 데몬 재시작 ──────────────────────────────────────────
+
+fn daemon_bin(kind: &ImeKind) -> &'static str {
+    match kind {
+        ImeKind::Kime   => "kime",
+        ImeKind::Ibus   => "ibus-daemon",
+        ImeKind::Fcitx5 => "fcitx5",
+    }
+}
+
+/// setsid 로 popmgr 프로세스와 완전히 분리해 띄운다 (popmgr 종료 시 함께 죽지 않도록).
+fn daemon_restart_cmd(kind: &ImeKind) -> &'static str {
+    match kind {
+        ImeKind::Kime   => "pkill -x kime 2>/dev/null; sleep 0.3; setsid kime </dev/null >/dev/null 2>&1 &",
+        ImeKind::Ibus   => "pkill -x ibus-daemon 2>/dev/null; sleep 0.3; setsid ibus-daemon -drxR </dev/null >/dev/null 2>&1 &",
+        ImeKind::Fcitx5 => "pkill -x fcitx5 2>/dev/null; sleep 0.3; setsid fcitx5 -d --replace </dev/null >/dev/null 2>&1 &",
+    }
+}
+
+async fn restart_ime_daemon(kind: ImeKind) -> CmdResult {
+    let bin = daemon_bin(&kind);
+    if !which_exists(bin).await {
+        return CmdResult {
+            success: false,
+            output: format!("{} 미설치: '{}' 바이너리를 찾을 수 없습니다.", kind.label(), bin),
+        };
+    }
+    runner::run_sh(daemon_restart_cmd(&kind)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    if runner::run("pgrep", &["-x", bin]).await.success {
+        CmdResult {
+            success: true,
+            output: format!(
+                "{} 데몬 재시작 완료.\n주의: X11(XIM) 앱(Wine, Java 등)은 입력 컨텍스트가 끊기므로 창을 다시 포커스하거나 재실행해야 할 수 있습니다.",
+                kind.label()
+            ),
+        }
+    } else {
+        CmdResult {
+            success: false,
+            output: format!(
+                "{} 데몬이 시작되지 않았습니다.\n터미널에서 직접 `{}` 실행 후 에러 메시지를 확인해주세요.",
+                kind.label(), bin
+            ),
+        }
+    }
+}
+
+// ── fcitx5 한/영 상태 유지 설정 ─────────────────────────────
+
+fn fcitx5_config_path() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/nonexistent"))
+        .join("fcitx5")
+        .join("config")
+}
+
+/// fcitx5 설정 파일에서 한/영 상태 정책만 읽는다. 키가 없으면 fcitx5 기본값으로 본다.
+fn parse_fcitx5_behavior(content: &str) -> Fcitx5Behavior {
+    let mut share = "No".to_string();
+    let mut active = false;
+    // fcitx5는 빈 키 목록을 부모 섹션의 `AltTriggerKeys=` 로, 비어 있지 않으면
+    // `[Hotkey/AltTriggerKeys]` 하위 섹션으로 저장한다. 둘 다 없으면 기본값(Shift_L).
+    let mut has_alt_trigger_keys = false;
+    let mut shift_alt_trigger = false;
+    let mut section = String::new();
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line[1..line.len() - 1].to_string();
+            if section == "Hotkey/AltTriggerKeys" {
+                has_alt_trigger_keys = true;
+            }
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let (k, v) = (k.trim(), v.trim());
+        match section.as_str() {
+            "Behavior" => match k {
+                "ShareInputState" => share = v.to_string(),
+                "ActiveByDefault" => active = v.eq_ignore_ascii_case("true"),
+                _ => {}
+            },
+            "Hotkey" if k == "AltTriggerKeys" => {
+                has_alt_trigger_keys = true;
+                shift_alt_trigger |= v == "Shift_L";
+            }
+            "Hotkey/AltTriggerKeys" => {
+                shift_alt_trigger |= v == "Shift_L";
+            }
+            _ => {}
+        }
+    }
+    if !has_alt_trigger_keys {
+        shift_alt_trigger = true;
+    }
+    Fcitx5Behavior { share_input_state: share, active_by_default: active, shift_alt_trigger }
+}
+
+struct IniSection {
+    header: Option<String>, // None = 첫 섹션 헤더 앞부분
+    lines: Vec<String>,
+}
+
+fn set_ini_key(sections: &mut Vec<IniSection>, section: &str, key: &str, value: &str) {
+    let idx = match sections.iter().position(|s| s.header.as_deref() == Some(section)) {
+        Some(i) => i,
+        None => {
+            // 새 섹션은 파일 끝에, 앞 내용과 빈 줄로 구분
+            if let Some(last) = sections.last_mut() {
+                if last.lines.last().map(|l| !l.trim().is_empty()).unwrap_or(false) {
+                    last.lines.push(String::new());
+                }
+            }
+            sections.push(IniSection { header: Some(section.to_string()), lines: Vec::new() });
+            sections.len() - 1
+        }
+    };
+    let new_line = format!("{key}={value}");
+    let sec = &mut sections[idx];
+    let mut found = false;
+    sec.lines.retain(|line| {
+        if line.trim().split_once('=').map(|(existing, _)| existing.trim() == key).unwrap_or(false) {
+            if found {
+                false
+            } else {
+                found = true;
+                true
+            }
+        } else {
+            true
+        }
+    });
+    if found {
+        let existing = sec.lines.iter_mut().find(|line| {
+            line.trim().split_once('=').map(|(existing, _)| existing.trim() == key).unwrap_or(false)
+        }).expect("retained first matching key");
+        *existing = new_line;
+    } else {
+        // 섹션 끝의 빈 줄(다음 섹션과의 구분) 앞에 넣는다
+        let mut at = sec.lines.len();
+        while at > 0 && sec.lines[at - 1].trim().is_empty() {
+            at -= 1;
+        }
+        sec.lines.insert(at, new_line);
+    }
+}
+
+/// 설정 파일 내용을 한/영 상태 유지 정책으로 고친 새 내용을 돌려준다.
+/// 관련 키만 바꾸고 나머지 줄(주석·다른 단축키)은 그대로 둔다.
+fn patch_fcitx5_behavior(content: &str) -> String {
+    let mut sections = vec![IniSection { header: None, lines: Vec::new() }];
+    for raw in content.lines() {
+        let t = raw.trim();
+        if t.starts_with('[') && t.ends_with(']') {
+            sections.push(IniSection { header: Some(t[1..t.len() - 1].to_string()), lines: Vec::new() });
+        } else {
+            sections.last_mut().unwrap().lines.push(raw.to_string());
+        }
+    }
+    // 왼쪽 Shift 단독 탭 → 영문 전환 (AltTriggerKeys=Shift_L)만 제거한다.
+    // 다른 AltTriggerKeys는 보존하고, 목록 키는 fcitx5 형식대로 다시 번호를 매긴다.
+    let mut retained_alt_trigger_keys = false;
+    for section in &mut sections {
+        if section.header.as_deref() != Some("Hotkey/AltTriggerKeys") {
+            continue;
+        }
+        let mut entry_index = 0usize;
+        section.lines.retain_mut(|line| {
+            let Some((key, value)) = line.trim().split_once('=') else {
+                return true;
+            };
+            if key.trim().parse::<usize>().is_err() {
+                return true;
+            }
+            if value.trim() == "Shift_L" {
+                return false;
+            }
+            *line = format!("{entry_index}={}", value.trim());
+            entry_index += 1;
+            true
+        });
+        retained_alt_trigger_keys |= entry_index > 0;
+    }
+    if retained_alt_trigger_keys {
+        sections.retain(|section| section.header.as_deref() != Some("Hotkey/AltTriggerKeys") || !section.lines.is_empty());
+    } else {
+        // 섹션을 지우기만 하면 fcitx5가 기본값(Shift_L)으로 되돌리므로 빈 키를 명시한다.
+        sections.retain(|section| section.header.as_deref() != Some("Hotkey/AltTriggerKeys"));
+        set_ini_key(&mut sections, "Hotkey", "AltTriggerKeys", "");
+    }
+    // 모든 창이 한/영 상태를 공유하고, 새 창은 한글로 시작
+    set_ini_key(&mut sections, "Behavior", "ShareInputState", "All");
+    set_ini_key(&mut sections, "Behavior", "ActiveByDefault", "True");
+
+    let mut out = String::new();
+    for s in &sections {
+        if let Some(h) = &s.header {
+            out.push('[');
+            out.push_str(h);
+            out.push_str("]\n");
+        }
+        for l in &s.lines {
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    if !content.is_empty() && !content.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+fn write_fcitx5_config(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let permissions = match std::fs::metadata(path) {
+        Ok(metadata) => metadata.permissions(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::Permissions::from_mode(0o600)
+        }
+        Err(error) => return Err(error),
+    };
+    let tmp = path.with_extension("popmgr-tmp");
+    let result = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        std::fs::set_permissions(&tmp, permissions)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// 실행 중인 fcitx5가 실제로 쓰는 ShareInputState 값을 D-Bus 로 읽는다.
+async fn read_live_fcitx5_share_state() -> Option<String> {
+    let script = "dbus-send --session --print-reply --dest=org.fcitx.Fcitx5 /controller \
+        org.fcitx.Fcitx.Controller1.GetConfig string:fcitx://config/global 2>/dev/null \
+        | grep -A1 '\"ShareInputState\"' | grep -o 'variant *string \"[^\"]*\"' | head -1 \
+        | sed 's/.*\"\\(.*\\)\"/\\1/'";
+    let r = runner::run_sh(script).await;
+    let v = r.output.trim().to_string();
+    if r.success && !v.is_empty() { Some(v) } else { None }
+}
+
+/// ~/.config/fcitx5/config 를 고치고, 실행 중인 fcitx5에는 재시작 없이 반영한다.
+/// (재시작하면 XIM 클라이언트의 입력 컨텍스트가 끊기고 모든 창의 상태가 리셋된다.)
+pub async fn fix_fcitx5_behavior() -> CmdResult {
+    let path = fcitx5_config_path();
+    let original = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+    let patched = patch_fcitx5_behavior(&original);
+    let mut out = String::new();
+
+    if patched != original {
+        if let Some(dir) = path.parent() {
+            if let Err(e) = tokio::fs::create_dir_all(dir).await {
+                return CmdResult { success: false, output: format!("설정 디렉토리 생성 실패 ({}): {e}", dir.display()) };
+            }
+        }
+        if let Err(e) = write_fcitx5_config(&path, &patched) {
+            return CmdResult { success: false, output: format!("설정 쓰기 실패 ({}): {e}", path.display()) };
+        }
+        out.push_str(&format!("{} 갱신\n", path.display()));
+    } else {
+        out.push_str(&format!("{} 은 이미 올바른 설정\n", path.display()));
+    }
+
+    if runner::run("pgrep", &["-x", "fcitx5"]).await.success {
+        let r = runner::run("fcitx5-remote", &["-r"]).await;
+        if !r.success {
+            out.push_str(&format!("[!] fcitx5-remote -r (설정 재로드) 실패: {}\n", r.output.trim()));
+        } else {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            match read_live_fcitx5_share_state().await {
+                Some(v) if v == "All" => out.push_str("[확인] 실행 중인 fcitx5에 반영됨: ShareInputState=All\n"),
+                Some(v) => out.push_str(&format!("[!] 실행 중인 fcitx5는 아직 ShareInputState={v} — 'IME 재시작'을 눌러주세요\n")),
+                None => out.push_str("[?] 실행 중인 fcitx5의 설정을 D-Bus로 확인하지 못했습니다\n"),
+            }
+        }
+    } else {
+        out.push_str("fcitx5 미실행: 다음 시작부터 적용됩니다\n");
+    }
+
+    out.push_str(
+        "\n- 창을 오가거나 데몬이 재시작돼도 한/영 상태가 유지되고, 새 창은 한글로 시작합니다.\n\
+         - 왼쪽 Shift 단독 탭으로 영문 전환되는 동작은 껐습니다 (전환은 한/영·Shift+Space 등 트리거 키로).",
+    );
+    CmdResult { success: true, output: out }
+}
+
+async fn install_fcitx5_frontends(pkgs: Vec<&'static str>) -> CmdResult {
+    if pkgs.is_empty() {
+        return CmdResult { success: true, output: "설치할 fcitx5 프론트엔드가 없습니다.".into() };
+    }
+    let script = format!("pkexec apt-get install -y {}", pkgs.join(" "));
+    let r = runner::run_sh(&script).await;
+    if r.success {
+        CmdResult {
+            success: true,
+            output: format!(
+                "fcitx5 프론트엔드 설치 완료: {}\n해당 툴킷 앱은 재실행해야 IM 모듈을 읽습니다.",
+                pkgs.join(", ")
+            ),
+        }
+    } else {
+        r
+    }
+}
+
+fn fcitx5_behavior_card(beh: &Fcitx5Behavior, disabled: bool) -> Element<'static, ImeMsg> {
+    let ok = beh.is_ok();
+    let title = if ok {
+        "[OK] fcitx5 한/영 상태 유지 설정".to_string()
+    } else {
+        "[!] fcitx5: 창 전환·재시작 때 영문으로 초기화되는 설정".to_string()
+    };
+    let title_col = if ok { C_OK } else { C_WARN };
+
+    let mut body = column![
+        text(title).size(13).color(title_col),
+        Space::with_height(4),
+    ];
+    if ok {
+        body = body.push(
+            text("모든 창이 한/영 상태를 공유하고 새 창은 한글로 시작합니다. 왼쪽 Shift 단독 탭 영문 전환은 꺼져 있습니다.")
+                .size(11).color(C_DIM),
+        );
+    } else {
+        body = body.push(
+            text("fcitx5 기본값은 창마다 한/영 상태를 따로 기억하고 새 창을 영문으로 시작합니다. 다른 창에 갔다 오거나 데몬이 재시작되면 영문만 입력되는 원인입니다.")
+                .size(11).color(C_DIM),
+        );
+        body = body.push(Space::with_height(6));
+        let mark = |good: bool| if good { "[OK]" } else { "[!]" };
+        body = body.push(
+            text(format!(
+                "{} 입력 상태 공유 ShareInputState={} → All\n{} 기본 활성 ActiveByDefault={} → True\n{} 왼쪽 Shift 단독 탭 영문 전환(AltTriggerKeys=Shift_L) → 제거",
+                mark(beh.share_input_state == "All"), beh.share_input_state,
+                mark(beh.active_by_default), if beh.active_by_default { "True" } else { "False" },
+                mark(!beh.shift_alt_trigger),
+            ))
+            .size(11).color(C_WARN),
+        );
+        body = body.push(Space::with_height(6));
+        body = body.push(
+            text("~/.config/fcitx5/config 를 고치고 재시작 없이 즉시 반영합니다 (fcitx5-remote -r).")
+                .size(11).color(C_DIM),
+        );
+        body = body.push(Space::with_height(8));
+        body = body.push(row![
+            Space::with_width(Length::Fill),
+            action_btn("고치기", ImeMsg::FixFcitx5Behavior, !disabled, C_BLUE),
+        ]);
+    }
+    container(body)
+        .width(Length::Fill)
+        .padding([12, 14])
+        .style(move |_| iced::widget::container::Style {
+            background: Some(iced::Background::Color(
+                if ok { Color { r: 0.906, g: 0.976, b: 0.949, a: 1.0 } }
+                else  { Color { r: 1.0, g: 0.973, b: 0.922, a: 1.0 } }
+            )),
+            border: iced::Border {
+                radius: 8.0.into(),
+                color: if ok { C_OK } else { C_WARN },
+                width: 1.0,
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn fcitx5_frontend_card(missing: &[&'static str], disabled: bool) -> Element<'static, ImeMsg> {
+    let items = missing.iter().map(|pkg| {
+        let desc = FCITX5_FRONTEND_PKGS.iter()
+            .find(|(p, _)| p == pkg)
+            .map(|(_, d)| *d)
+            .unwrap_or("");
+        format!("- {pkg}  ({desc})")
+    }).collect::<Vec<_>>().join("\n");
+    let body = column![
+        text("[!] fcitx5 툴킷 프론트엔드(IM 모듈) 미설치").size(13).color(C_WARN),
+        Space::with_height(4),
+        text("GTK_IM_MODULE/QT_IM_MODULE=fcitx 로 지정돼 있지만 해당 툴킷의 fcitx5 모듈이 없어, 그 툴킷으로 만든 앱에서는 한글 입력이 안 되거나 불안정합니다.")
+            .size(11).color(C_DIM),
+        Space::with_height(6),
+        text(items).size(11).color(C_WARN),
+        Space::with_height(8),
+        row![
+            Space::with_width(Length::Fill),
+            action_btn("설치 (pkexec)", ImeMsg::InstallFcitx5Frontends, !disabled, C_BLUE),
+        ],
+    ];
+    container(body)
+        .width(Length::Fill)
+        .padding([12, 14])
+        .style(|_| iced::widget::container::Style {
+            background: Some(iced::Background::Color(Color { r: 1.0, g: 0.973, b: 0.922, a: 1.0 })),
+            border: iced::Border { radius: 8.0.into(), color: C_WARN, width: 1.0 },
+            ..Default::default()
+        })
+        .into()
+}
+
+#[cfg(test)]
+mod fcitx5_behavior_tests {
+    use super::{parse_fcitx5_behavior, patch_fcitx5_behavior, write_fcitx5_config};
+    use std::os::unix::fs::PermissionsExt;
+
+    fn temp_config_path(name: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after Unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "popmgr-fcitx5-behavior-{}-{unique}",
+            std::process::id(),
+        ));
+        std::fs::create_dir_all(&dir).expect("create temporary test directory");
+        dir.join(name)
+    }
+
+    // 실제 노트북의 ~/.config/fcitx5/config 요약 (fcitx5 5.1.7 기본값 그대로)
+    const REAL: &str = "[Hotkey]\n\
+# 트리거 키를 반복해서 누를 때 열거하기\n\
+EnumerateWithTriggerKeys=True\n\
+# 입력기 전환\n\
+EnumerateForwardKeys=\n\
+\n\
+[Hotkey/TriggerKeys]\n\
+0=Control+space\n\
+1=Shift+space\n\
+2=Hangul\n\
+\n\
+[Hotkey/AltTriggerKeys]\n\
+0=Shift_L\n\
+\n\
+[Hotkey/PrevPage]\n\
+0=Up\n\
+\n\
+[Behavior]\n\
+# 기본적으로 활성화\n\
+ActiveByDefault=False\n\
+# 입력 상태 공유\n\
+ShareInputState=No\n\
+# 페이지 크기 기본값\n\
+DefaultPageSize=5\n";
+
+    #[test]
+    fn defaults_when_config_is_missing() {
+        let b = parse_fcitx5_behavior("");
+        assert_eq!(b.share_input_state, "No");
+        assert!(!b.active_by_default);
+        assert!(b.shift_alt_trigger, "AltTriggerKeys 미지정 = fcitx5 기본값 Shift_L");
+        assert!(!b.is_ok());
+    }
+
+    #[test]
+    fn parses_the_real_default_config_as_broken() {
+        let b = parse_fcitx5_behavior(REAL);
+        assert_eq!(b.share_input_state, "No");
+        assert!(!b.active_by_default);
+        assert!(b.shift_alt_trigger);
+        assert!(!b.is_ok());
+    }
+
+    #[test]
+    fn patch_fixes_policy_and_keeps_everything_else() {
+        let patched = patch_fcitx5_behavior(REAL);
+        assert!(parse_fcitx5_behavior(&patched).is_ok(), "{patched}");
+        // 관련 키만 바뀜
+        assert_eq!(patched.matches("ShareInputState=All").count(), 1);
+        assert_eq!(patched.matches("ActiveByDefault=True").count(), 1);
+        assert!(!patched.contains("ShareInputState=No"));
+        assert!(!patched.contains("ActiveByDefault=False"));
+        assert!(!patched.contains("[Hotkey/AltTriggerKeys]"));
+        assert!(patched.contains("[Hotkey]\n# 트리거 키를 반복해서 누를 때 열거하기\nEnumerateWithTriggerKeys=True"));
+        assert!(patched.contains("EnumerateForwardKeys=\nAltTriggerKeys=\n\n[Hotkey/TriggerKeys]\n0=Control+space\n1=Shift+space\n2=Hangul\n"));
+        assert!(patched.contains("[Hotkey/PrevPage]\n0=Up\n"));
+        assert!(patched.contains("# 페이지 크기 기본값\nDefaultPageSize=5\n"));
+    }
+
+    #[test]
+    fn patch_is_idempotent() {
+        let once = patch_fcitx5_behavior(REAL);
+        assert_eq!(patch_fcitx5_behavior(&once), once);
+    }
+
+    #[test]
+    fn patch_creates_sections_for_an_empty_file() {
+        let patched = patch_fcitx5_behavior("");
+        assert_eq!(patched, "[Hotkey]\nAltTriggerKeys=\n\n[Behavior]\nShareInputState=All\nActiveByDefault=True\n");
+        assert!(parse_fcitx5_behavior(&patched).is_ok());
+    }
+
+    #[test]
+    fn empty_alt_trigger_key_means_no_shift_toggle() {
+        let content = "[Hotkey]\nAltTriggerKeys=\n\n[Behavior]\nShareInputState=All\nActiveByDefault=True\n";
+        let b = parse_fcitx5_behavior(content);
+        assert!(!b.shift_alt_trigger);
+        assert!(b.is_ok());
+    }
+
+    #[test]
+    fn parses_shift_l_alt_trigger_entry() {
+        let content = "[Hotkey/AltTriggerKeys]\n0=Shift_L\n";
+        assert!(parse_fcitx5_behavior(content).shift_alt_trigger);
+    }
+
+    #[test]
+    fn parses_shift_l_among_other_alt_trigger_entries() {
+        let content = "[Hotkey/AltTriggerKeys]\n0=Shift_L\n1=Shift_R\n";
+        assert!(parse_fcitx5_behavior(content).shift_alt_trigger);
+    }
+
+    #[test]
+    fn does_not_treat_shift_r_as_shift_l_alt_trigger() {
+        let content = "[Hotkey/AltTriggerKeys]\n0=Shift_R\n";
+        assert!(!parse_fcitx5_behavior(content).shift_alt_trigger);
+    }
+
+    #[test]
+    fn does_not_treat_control_shift_l_as_shift_l_alt_trigger() {
+        let content = "[Hotkey/AltTriggerKeys]\n0=Control+Shift_L\n";
+        assert!(!parse_fcitx5_behavior(content).shift_alt_trigger);
+    }
+
+    #[test]
+    fn patch_replaces_first_duplicate_key_and_removes_the_rest() {
+        let content = "[Behavior]\nShareInputState=No\nShareInputState=Program\nActiveByDefault=False\n";
+        let patched = patch_fcitx5_behavior(content);
+        assert_eq!(patched.matches("ShareInputState=").count(), 1);
+        assert!(patched.contains("ShareInputState=All\n"));
+    }
+
+    #[test]
+    fn patch_is_independent_of_section_order() {
+        let content = "[Behavior]\nActiveByDefault=False\nShareInputState=No\n\n[Hotkey/AltTriggerKeys]\n0=Shift_R\n";
+        let patched = patch_fcitx5_behavior(content);
+        assert!(parse_fcitx5_behavior(&patched).is_ok(), "{patched}");
+        assert!(patched.contains("[Hotkey/AltTriggerKeys]\n0=Shift_R\n"));
+    }
+
+    #[test]
+    fn patch_without_trailing_newline_is_idempotent() {
+        let content = "[Hotkey/AltTriggerKeys]\n0=Shift_L\n1=Shift_R\n[Behavior]\nShareInputState=No\nActiveByDefault=False";
+        let once = patch_fcitx5_behavior(content);
+        assert!(!once.ends_with('\n'));
+        assert_eq!(patch_fcitx5_behavior(&once), once);
+    }
+
+    #[test]
+    fn write_fcitx5_config_preserves_existing_permissions() {
+        let path = temp_config_path("config");
+        std::fs::write(&path, "old").expect("write existing config");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("set existing config permissions");
+        write_fcitx5_config(&path, "new").expect("replace config");
+        assert_eq!(std::fs::metadata(&path).expect("config metadata").permissions().mode() & 0o777, 0o600);
+        std::fs::remove_dir_all(path.parent().expect("temporary directory")).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn write_fcitx5_config_uses_0600_for_new_file() {
+        let path = temp_config_path("config");
+        write_fcitx5_config(&path, "new").expect("write config");
+        assert_eq!(std::fs::metadata(&path).expect("config metadata").permissions().mode() & 0o777, 0o600);
+        std::fs::remove_dir_all(path.parent().expect("temporary directory")).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn write_fcitx5_config_writes_the_given_content() {
+        let path = temp_config_path("config");
+        let content = "[Behavior]\nShareInputState=All\n";
+        write_fcitx5_config(&path, content).expect("write config");
+        assert_eq!(std::fs::read_to_string(&path).expect("read config"), content);
+        std::fs::remove_dir_all(path.parent().expect("temporary directory")).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn program_scope_is_not_enough() {
+        let content = "[Hotkey]\nAltTriggerKeys=\n\n[Behavior]\nShareInputState=Program\nActiveByDefault=True\n";
+        assert!(!parse_fcitx5_behavior(content).is_ok());
     }
 }
 
@@ -1123,13 +1808,20 @@ async fn apply_ime(kind: ImeKind) -> CmdResult {
     );
     runner::run_sh(&session_script).await;
 
-    // 선택한 IME 데몬 재시작 (detach 후 실제 실행 확인)
-    let daemon_cmd = match &kind {
-        ImeKind::Kime   => "pkill -x kime 2>/dev/null; sleep 0.3; setsid kime </dev/null >/dev/null 2>&1 &",
-        ImeKind::Ibus   => "pkill -x ibus-daemon 2>/dev/null; sleep 0.3; setsid ibus-daemon -drxR </dev/null >/dev/null 2>&1 &",
-        ImeKind::Fcitx5 => "pkill -x fcitx5 2>/dev/null; sleep 0.3; setsid fcitx5 -d --replace </dev/null >/dev/null 2>&1 &",
+    // fcitx5: 창 전환·데몬 재시작 때 영문으로 초기화되지 않도록 전역 설정을 먼저 보장
+    let behavior_note = if kind == ImeKind::Fcitx5 {
+        let r = fix_fcitx5_behavior().await;
+        if r.success {
+            "\n- fcitx5 한/영 상태 유지 설정 (ShareInputState=All, ActiveByDefault=True)".to_string()
+        } else {
+            format!("\n- [!] fcitx5 설정 갱신 실패: {}", r.output.lines().next().unwrap_or(""))
+        }
+    } else {
+        String::new()
     };
-    runner::run_sh(daemon_cmd).await;
+
+    // 선택한 IME 데몬 재시작 (detach 후 실제 실행 확인)
+    runner::run_sh(daemon_restart_cmd(&kind)).await;
 
     // 데몬이 실제로 살아있는지 검증
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
@@ -1166,8 +1858,8 @@ async fn apply_ime(kind: ImeKind) -> CmdResult {
     CmdResult {
         success: true,
         output: format!(
-            "{} 적용 완료.\n- /etc/environment 업데이트\n- 데몬 시작 확인됨\n\n[중요] /etc/environment는 로그인 시점에 한 번만 읽힙니다.\n현재 실행 중인 COSMIC 세션의 앱들에 완전히 적용하려면 로그아웃 후 다시 로그인하세요.\n(D-Bus 활성화로 띄우는 앱에는 부분적으로 즉시 반영됨)",
-            kind.label()
+            "{} 적용 완료.\n- /etc/environment 업데이트\n- 데몬 시작 확인됨{}\n\n[중요] /etc/environment는 로그인 시점에 한 번만 읽힙니다.\n현재 실행 중인 COSMIC 세션의 앱들에 완전히 적용하려면 로그아웃 후 다시 로그인하세요.\n(D-Bus 활성화로 띄우는 앱에는 부분적으로 즉시 반영됨)",
+            kind.label(), behavior_note
         ),
     }
 }

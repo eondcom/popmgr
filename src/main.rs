@@ -78,6 +78,13 @@ fn main() -> iced::Result {
     if args.get(1).map(|s| s.as_str()) == Some("--apply-vref") {
         std::process::exit(apply_vref_cli(&args));
     }
+    // 터미널/스크립트용: fcitx5 한/영 상태 유지 설정을 GUI 없이 적용 (IME 탭 "고치기"와 동일)
+    if args.get(1).map(|s| s.as_str()) == Some("--fix-fcitx5-behavior") {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let r = rt.block_on(ui::ime::fix_fcitx5_behavior());
+        println!("{}", r.output);
+        std::process::exit(if r.success { 0 } else { 1 });
+    }
 
     if let Err(msg) = acquire_single_instance_lock() {
         eprintln!("{msg}");
