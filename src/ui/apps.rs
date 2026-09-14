@@ -37,6 +37,7 @@ pub struct AppsStatus {
     pub orca_icon_ok: bool,
     pub orca_dock_ok: bool,
     pub recording: RecordingStatus,
+    pub mpv: MpvStatus,
     pub packages: Vec<Package>,
 }
 
@@ -58,6 +59,47 @@ pub struct RecordingStatus {
 }
 
 #[derive(Debug, Clone)]
+pub struct MpvStatus {
+    installed: bool,
+    vaapi: VaApiStatus,
+    default_player: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VaApiStatus { Supported, Unsupported, Unknown }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlayerState { Default, InstalledNotDefault, NotInstalled }
+
+const VIDEO_MIME_TYPES: [&str; 9] = [
+    "video/mp4",
+    "video/x-matroska",
+    "video/webm",
+    "video/x-msvideo",
+    "video/quicktime",
+    "video/mpeg",
+    "video/x-flv",
+    "video/3gpp",
+    "video/ogg",
+];
+
+fn xdg_mime_default_args() -> Vec<&'static str> {
+    let mut args = vec!["default", "mpv.desktop"];
+    args.extend(VIDEO_MIME_TYPES);
+    args
+}
+
+fn mpv_player_state(installed: bool, default_is_mpv: bool) -> PlayerState {
+    if !installed {
+        PlayerState::NotInstalled
+    } else if default_is_mpv {
+        PlayerState::Default
+    } else {
+        PlayerState::InstalledNotDefault
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum AppsMsg {
     Refresh,
     Refreshed(AppsStatus),
@@ -73,6 +115,8 @@ pub enum AppsMsg {
     FixKakaotalkIcon,
     FixKakaotalkIme,
     InstallOrca,
+    InstallMpv,
+    SetMpvDefaultPlayer,
     InstallRecording,
     RegisterRecordingShortcut,
     ToggleRecording,
@@ -346,6 +390,17 @@ echo "참고: 터미널에서 'orca' 를 치면 GNOME 스크린리더가 실행�
                     &extension,
                 );
                 let t = Task::perform(async move { runner::run_stream(&script).await }, AppsMsg::Done);
+                (t, None)
+            }
+            AppsMsg::InstallMpv => {
+                self.running = Some("mpv·VA-API 정보 도구 설치 중...".into());
+                let script = "pkexec apt-get install -y mpv vainfo";
+                let t = Task::perform(async move { runner::run_stream(script).await }, AppsMsg::Done);
+                (t, None)
+            }
+            AppsMsg::SetMpvDefaultPlayer => {
+                self.running = Some("mpv를 기본 동영상 플레이어로 지정 중...".into());
+                let t = Task::perform(async { set_mpv_default_player().await }, AppsMsg::Done);
                 (t, None)
             }
             AppsMsg::RegisterRecordingShortcut => {
@@ -1101,6 +1156,10 @@ EOF
 
         // GPU Screen Recorder 카드
         col = col.push(recording_card(self.status.as_ref(), is_running));
+        col = col.push(Space::with_height(12));
+
+        // 동영상 플레이어 카드
+        col = col.push(mpv_card(self.status.as_ref(), is_running));
         col = col.push(Space::with_height(20));
 
         // 프로그램 제거 섹션
@@ -1385,6 +1444,53 @@ fn recording_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'stati
     card(row![left.width(Length::Fill), right].align_y(iced::Alignment::Center))
 }
 
+fn mpv_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'static, AppsMsg> {
+    let mpv = status.map(|status| &status.mpv);
+    let installed = mpv.is_some_and(|status| status.installed);
+    let default_player = mpv.and_then(|status| status.default_player.as_deref());
+    let default_is_mpv = default_player == Some("mpv.desktop");
+    let player_state = mpv_player_state(installed, default_is_mpv);
+    let (status_text, status_color) = match player_state {
+        PlayerState::Default => ("[OK] mpv 기본 플레이어로 설정됨", C_OK),
+        PlayerState::InstalledNotDefault => ("[권장] mpv 설치됨 — 기본 플레이어 아님", C_WARN),
+        PlayerState::NotInstalled => ("[!] mpv 미설치", C_ERR),
+    };
+    let vaapi = mpv.map(|status| status.vaapi).unwrap_or(VaApiStatus::Unknown);
+    let vaapi_text = match vaapi {
+        VaApiStatus::Supported => "VA-API 디코딩: 지원됨 (VAEntrypointVLD)",
+        VaApiStatus::Unsupported => "VA-API 디코딩: 지원 정보 없음",
+        VaApiStatus::Unknown => "VA-API 디코딩: 확인 불가 (vainfo 미설치)",
+    };
+    let vaapi_color = match vaapi {
+        VaApiStatus::Supported => C_OK,
+        VaApiStatus::Unsupported => C_WARN,
+        VaApiStatus::Unknown => C_DIM,
+    };
+    let default_text = match default_player {
+        Some("mpv.desktop") => "현재 기본 플레이어: mpv.desktop".to_string(),
+        Some(player) => format!("현재: {player}"),
+        None => "현재 기본 플레이어: 확인 불가".to_string(),
+    };
+    let left = column![
+        text("동영상 플레이어 (mpv · VA-API)").size(14).color(C_TEXT),
+        Space::with_height(3),
+        text(status_text).size(12).color(status_color),
+        text(vaapi_text).size(11).color(vaapi_color),
+        text(default_text).size(11).color(C_DIM),
+    ];
+    let mut right = column![].spacing(6).align_x(iced::Alignment::End);
+    if !installed {
+        right = right.push(action_btn("mpv 설치", AppsMsg::InstallMpv, !disabled, C_OK));
+    }
+    right = right.push(action_btn(
+        "기본 플레이어로 지정",
+        AppsMsg::SetMpvDefaultPlayer,
+        !disabled && installed,
+        C_BLUE,
+    ));
+    card(row![left.width(Length::Fill), right].align_y(iced::Alignment::Center))
+}
+
 fn pkg_row(idx: usize, pkg: &Package, disabled: bool) -> Element<'_, AppsMsg> {
     let bg = if pkg.marked { Color { r: 0.996, g: 0.925, b: 0.933, a: 1.0 } } else { C_SURFACE };
     let border = if pkg.marked { C_ERR } else { C_BORDER };
@@ -1656,6 +1762,37 @@ fn add_recording_shortcut_description(content: &str, command: &str) -> String {
     content.replace(&entry, &described)
 }
 
+async fn set_mpv_default_player() -> CmdResult {
+    let args = xdg_mime_default_args();
+    let set_result = runner::run("xdg-mime", &args).await;
+    let mut failed_mime_types = Vec::new();
+    for mime_type in VIDEO_MIME_TYPES {
+        let result = runner::run("xdg-mime", &["query", "default", mime_type]).await;
+        if result.output.trim() != "mpv.desktop" {
+            failed_mime_types.push(mime_type);
+        }
+    }
+    if failed_mime_types.is_empty() && set_result.success {
+        CmdResult {
+            success: true,
+            output: "mpv를 모든 동영상 MIME 타입의 기본 플레이어로 지정했습니다.".into(),
+        }
+    } else if failed_mime_types.is_empty() {
+        CmdResult {
+            success: false,
+            output: format!("기본 플레이어 지정 명령 실패:\n{}", set_result.output.trim()),
+        }
+    } else {
+        CmdResult {
+            success: false,
+            output: format!(
+                "mpv.desktop으로 지정되지 않은 MIME 타입: {}",
+                failed_mime_types.join(", "),
+            ),
+        }
+    }
+}
+
 async fn scan_apps() -> AppsStatus {
     let mut packages = Vec::new();
 
@@ -1837,6 +1974,22 @@ async fn scan_apps() -> AppsStatus {
         output_dir: recording_output_dir(),
     };
 
+    let installed = runner::run("which", &["mpv"]).await.success;
+    let vainfo_installed = runner::run("which", &["vainfo"]).await.success;
+    let vaapi = if vainfo_installed {
+        let vainfo = runner::run("vainfo", &[]).await;
+        if vainfo.output.contains("VAEntrypointVLD") {
+            VaApiStatus::Supported
+        } else {
+            VaApiStatus::Unsupported
+        }
+    } else {
+        VaApiStatus::Unknown
+    };
+    let default_player = runner::run("xdg-mime", &["query", "default", "video/mp4"]).await
+        .output.lines().next().map(|line| line.trim().to_string()).filter(|line| !line.is_empty());
+    let mpv = MpvStatus { installed, vaapi, default_player };
+
     AppsStatus {
         kakaotalk_installed,
         kakaotalk_launcher,
@@ -1852,6 +2005,7 @@ async fn scan_apps() -> AppsStatus {
         orca_icon_ok,
         orca_dock_ok,
         recording,
+        mpv,
         packages,
     }
 }
@@ -1870,6 +2024,37 @@ mod tests {
     (modifiers: [Ctrl], key: "F6"): Spawn("six"),
     (modifiers: [Ctrl], key: "F7"): Spawn("seven"),
 }"#;
+
+    #[test]
+    fn video_mime_types_have_nine_unique_entries() {
+        let unique: std::collections::HashSet<_> = VIDEO_MIME_TYPES.iter().collect();
+        assert_eq!(VIDEO_MIME_TYPES.len(), 9);
+        assert_eq!(unique.len(), VIDEO_MIME_TYPES.len());
+    }
+
+    #[test]
+    fn xdg_mime_default_args_include_every_video_mime_and_one_desktop_entry() {
+        let args = xdg_mime_default_args();
+        assert_eq!(args.iter().filter(|arg| **arg == "mpv.desktop").count(), 1);
+        for mime_type in VIDEO_MIME_TYPES {
+            assert!(args.contains(&mime_type), "missing {mime_type}");
+        }
+    }
+
+    #[test]
+    fn mpv_player_state_is_not_installed_without_mpv() {
+        assert_eq!(mpv_player_state(false, false), PlayerState::NotInstalled);
+    }
+
+    #[test]
+    fn mpv_player_state_recommends_default_when_mpv_is_not_selected() {
+        assert_eq!(mpv_player_state(true, false), PlayerState::InstalledNotDefault);
+    }
+
+    #[test]
+    fn mpv_player_state_is_default_when_mpv_is_selected() {
+        assert_eq!(mpv_player_state(true, true), PlayerState::Default);
+    }
 
     #[test]
     fn determines_gsr_install_scope_from_flatpak_list_fixtures() {
