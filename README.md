@@ -37,7 +37,9 @@ Pop!_OS / COSMIC 데스크톱 관리 도구 — Rust + [Iced](https://github.com
 - ktrackball 데몬 상태 표시 / 재시작
 - 개별 장치 재인식 / 전체 USB 재인식
 - xHCI 컨트롤러 리셋 (확인 다이얼로그 포함)
-- Kensington 트랙볼의 Bluetooth/USB 전환 기능을 추가할 때는 [`docs/bluetooth-usb-trackball-notes.md`](docs/bluetooth-usb-trackball-notes.md) 참고
+- 블루투스 트랙볼 페어링/연결/해제 (스캔→pair→trust→connect 를 단일 `bluetoothctl` 세션으로 수행)
+  - 페어링 모드 진입은 기기 물리 조작(Expert 계열은 상단 버튼 4개 3초). 동글↔BT **모드 전환은 펌웨어 전용이라 소프트웨어로 불가**
+  - 배경과 함정은 [`docs/bluetooth-usb-trackball-notes.md`](docs/bluetooth-usb-trackball-notes.md), 사용자용 정리는 [`docs/tip-kensington-trackball-bluetooth-linux.md`](docs/tip-kensington-trackball-bluetooth-linux.md)
 
 ### 디스플레이 탭
 - 내장·외부 모니터 **밝기 조절** (외부는 명암까지)
@@ -131,7 +133,8 @@ sudo cp /usr/bin/cosmic-comp.bak /usr/bin/cosmic-comp
 ## 참고
 
 - 한글 IME 설정 가이드: [cosmic-os-korean](https://github.com/Hostingglobal-Tech/cosmic-os-korean)
-- Kensington 트랙볼 Bluetooth/USB 조사 노트: [`docs/bluetooth-usb-trackball-notes.md`](docs/bluetooth-usb-trackball-notes.md)
+- Kensington 트랙볼 Bluetooth/USB 조사 노트: [`docs/bluetooth-usb-trackball-notes.md`](docs/bluetooth-usb-trackball-notes.md) (2026-09-11 해결)
+- 리눅스에서 켄징턴 트랙볼 블루투스 연결하기(게시판 팁): [`docs/tip-kensington-trackball-bluetooth-linux.md`](docs/tip-kensington-trackball-bluetooth-linux.md)
 - 폰트: NanumSquare (UI) + NanumGothic (한글 폴백)
 
 ## 변경 이력

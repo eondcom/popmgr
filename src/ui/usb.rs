@@ -63,6 +63,27 @@ PY
     systemctl restart ktrackball.service
     echo "ktrackball 재시작"
     ;;
+  sync-trackball-match)
+    # 블루투스로 연결하면 장치 이름이 바뀐다(동글: "Kensington Expert Wireless TB Mouse",
+    # BT: "ExpertBT5.0 Mouse"). device_match 에 BT 이름이 없으면 데몬이 장치를 못 찾고
+    # 종료되어 speed_factor·버튼매핑이 전부 무효가 된다. 누락된 패턴만 덧붙인다.
+    [ -f "$CONF" ] || { echo "설정 없음: $CONF"; exit 1; }
+    changed=0
+    for pat in ExpertBT SlimbladeBT; do
+      grep -q "\"$pat\"" "$CONF" && continue
+      if grep -qE '^[[:space:]]*device_match[[:space:]]*=' "$CONF"; then
+        sed -i -E "s|^([[:space:]]*device_match[[:space:]]*=[[:space:]]*\[)|\1\"$pat\", |" "$CONF"
+        changed=1
+      fi
+    done
+    if [ "$changed" -eq 1 ]; then
+      systemctl restart ktrackball.service
+      echo "device_match 에 블루투스 장치 이름을 추가하고 ktrackball 을 재시작했습니다."
+      grep -E '^[[:space:]]*device_match' "$CONF"
+    else
+      echo "device_match 에 이미 블루투스 이름이 있습니다."
+    fi
+    ;;
   check)
     echo ok
     ;;
@@ -100,6 +121,24 @@ pub struct UsbStatus {
     pub tb_speed_factor: f64,          // ktrackball 모션 배율 (1.0 ~ 3.0)
     pub cursor_size: i32,              // XCURSOR_SIZE / gsettings cursor-size
     pub helper_installed: bool,        // popmgr-helper(NOPASSWD) 설치 여부
+    pub bt: BtStatus,                  // 블루투스 트랙볼 상태
+}
+
+/// 블루투스 어댑터 + 트랙볼(HID) 연결 상태.
+#[derive(Debug, Clone, Default)]
+pub struct BtStatus {
+    pub powered: bool,             // 컨트롤러 전원
+    pub blocked: bool,             // rfkill soft/hard block
+    pub devices: Vec<BtDevice>,    // 페어링됐거나 방금 스캔된 HID 후보
+}
+
+#[derive(Debug, Clone)]
+pub struct BtDevice {
+    pub mac: String,
+    pub name: String,
+    pub paired: bool,
+    pub connected: bool,
+    pub trusted: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +156,11 @@ pub enum UsbMsg {
     SetCursorSize(i32),      // 커서 크기 드래그 중 (16~96)
     CommitCursorSize,
     InstallHelper,           // popmgr-helper + NOPASSWD sudoers 설치(1회, pkexec)
+    BtPair,                  // 스캔→페어링→trust→연결 (단일 bluetoothctl 세션)
+    BtConnect(String),       // 이미 페어링된 기기 재연결
+    BtDisconnect(String),
+    BtForget(String),        // 페어링 해제(재등록 필요)
+    BtSyncMatch,             // ktrackball device_match 에 BT 장치 이름 추가
     Done(CmdResult),
     ConfirmXhci,
     CancelXhci,
@@ -259,6 +303,44 @@ impl UsbState {
                 );
                 (t, None)
             }
+            UsbMsg::BtPair => {
+                self.running = Some("블루투스 검색 중... (버튼 4개 3초로 페어링 모드 진입)".into());
+                let t = Task::perform(async { bt_pair_flow().await }, UsbMsg::Done);
+                (t, None)
+            }
+            UsbMsg::BtConnect(mac) => {
+                self.running = Some("연결 중...".into());
+                let q = shell_quote(&mac);
+                let script = format!("bluetoothctl connect {q} 2>&1 | tail -3");
+                let t = Task::perform(async move { runner::run_sh(&script).await }, UsbMsg::Done);
+                (t, None)
+            }
+            UsbMsg::BtDisconnect(mac) => {
+                self.running = Some("연결 해제 중...".into());
+                let q = shell_quote(&mac);
+                let script = format!("bluetoothctl disconnect {q} 2>&1 | tail -3");
+                let t = Task::perform(async move { runner::run_sh(&script).await }, UsbMsg::Done);
+                (t, None)
+            }
+            UsbMsg::BtForget(mac) => {
+                self.running = Some("페어링 해제 중...".into());
+                let q = shell_quote(&mac);
+                let script = format!(
+                    "bluetoothctl remove {q} 2>&1 | tail -3; echo '페어링을 해제했습니다. 다시 등록하려면 페어링 모드로 만든 뒤 [트랙볼 페어링]을 누르세요.'"
+                );
+                let t = Task::perform(async move { runner::run_sh(&script).await }, UsbMsg::Done);
+                (t, None)
+            }
+            UsbMsg::BtSyncMatch => {
+                self.running = Some("ktrackball 설정 동기화 중...".into());
+                let t = Task::perform(
+                    async { runner::run_sh(
+                        "sudo -n /usr/local/bin/popmgr-helper sync-trackball-match 2>&1"
+                    ).await },
+                    UsbMsg::Done,
+                );
+                (t, None)
+            }
             UsbMsg::Done(r) => {
                 self.running = None;
                 let refresh = Task::perform(async { scan_usb().await }, UsbMsg::Refreshed);
@@ -301,6 +383,10 @@ impl UsbState {
                 scrollable(list_col).height(280)
             );
             col = col.push(Space::with_height(12));
+
+            // 블루투스 트랙볼
+            col = col.push(bt_card(&st.bt, st.ktrackball_pid.is_some(), is_running));
+            col = col.push(Space::with_height(10));
 
             // ktrackball 상태
             let (ktb_txt, ktb_col) = match st.ktrackball_pid {
@@ -434,6 +520,118 @@ impl UsbState {
     }
 }
 
+/// 블루투스 트랙볼 카드: 상태 표시 + 페어링/연결/해제.
+///
+/// 모드 전환(2.4GHz 동글 <-> BT)은 기기 펌웨어가 물리 버튼으로만 처리하므로
+/// 소프트웨어로 제어할 수 없다. 여기서는 BT 쪽 스캔·페어링·연결만 담당한다.
+fn bt_card(bt: &BtStatus, ktb_running: bool, is_running: bool) -> Element<'_, UsbMsg> {
+    let mut inner = column![
+        row![
+            text("블루투스 트랙볼").size(13).color(C_TEXT),
+            Space::with_width(Length::Fill),
+            action_btn("트랙볼 페어링", UsbMsg::BtPair, !is_running, C_BLUE),
+        ].align_y(iced::Alignment::Center),
+        Space::with_height(8),
+    ];
+
+    let (ad_txt, ad_col) = if bt.blocked {
+        ("○ 블루투스 차단됨 (rfkill)".to_string(), C_ERR)
+    } else if bt.powered {
+        ("● 블루투스 켜짐".to_string(), C_OK)
+    } else {
+        ("○ 블루투스 꺼짐".to_string(), C_ERR)
+    };
+    inner = inner.push(text(ad_txt).size(12).color(ad_col));
+
+    if bt.devices.is_empty() {
+        inner = inner.push(Space::with_height(6));
+        inner = inner.push(
+            text("등록된 트랙볼이 없습니다. 기기를 페어링 모드로 만든 뒤 [트랙볼 페어링]을 누르세요.")
+                .size(11).color(C_DIM)
+        );
+    } else {
+        for d in &bt.devices {
+            inner = inner.push(Space::with_height(6));
+            let (st_txt, st_col) = if d.connected {
+                ("● 연결됨", C_OK)
+            } else if d.paired {
+                ("○ 페어링됨 (연결 안 됨)", C_WARN)
+            } else {
+                ("○ 미등록", C_DIM)
+            };
+            let mut actions = row![].spacing(6).align_y(iced::Alignment::Center);
+            if d.connected {
+                actions = actions.push(action_btn(
+                    "연결 해제", UsbMsg::BtDisconnect(d.mac.clone()), !is_running, C_BTN2));
+            } else if d.paired {
+                actions = actions.push(action_btn(
+                    "연결", UsbMsg::BtConnect(d.mac.clone()), !is_running, C_BLUE));
+            }
+            if d.paired {
+                actions = actions.push(action_btn(
+                    "등록 해제", UsbMsg::BtForget(d.mac.clone()), !is_running, C_WARN));
+            }
+            inner = inner.push(
+                container(column![
+                    row![
+                        text(d.name.clone()).size(12).color(C_TEXT),
+                        Space::with_width(Length::Fill),
+                        actions,
+                    ].align_y(iced::Alignment::Center),
+                    Space::with_height(2),
+                    row![
+                        text(st_txt).size(11).color(st_col),
+                        Space::with_width(8),
+                        text(d.mac.clone()).size(10).color(C_DIM),
+                    ].align_y(iced::Alignment::Center),
+                ])
+                .padding(8)
+                .style(|_: &iced::Theme| container::Style {
+                    background: Some(C_SURFACE.into()),
+                    border: iced::Border { color: C_BORDER, width: 1.0, radius: 4.0.into() },
+                    ..Default::default()
+                })
+            );
+        }
+    }
+
+    // 블루투스로는 장치 이름이 `ExpertBT5.0 Mouse` 로 바뀌므로 ktrackball 의
+    // device_match(`Expert Wireless`)에 안 걸린다. 그러면 데몬이 장치를 못 찾고 죽어
+    // speed_factor·버튼매핑이 전부 무효가 되고, 사용자는 "포인터가 밀린다"고 느낀다.
+    let bt_connected = bt.devices.iter().any(|d| d.connected);
+    if bt_connected && !ktb_running {
+        inner = inner.push(Space::with_height(8));
+        inner = inner.push(
+            container(column![
+                text("⚠ ktrackball 데몬이 실행되고 있지 않습니다")
+                    .size(12).color(C_WARN),
+                Space::with_height(4),
+                text("블루투스로 연결하면 장치 이름이 `ExpertBT5.0` 으로 바뀌어 device_match 에 걸리지 않습니다. 데몬이 장치를 못 찾고 종료되어 포인터 배율·버튼 매핑이 적용되지 않습니다(포인터가 느리게 느껴집니다).")
+                    .size(11).color(C_DIM),
+                Space::with_height(6),
+                row![
+                    Space::with_width(Length::Fill),
+                    action_btn("BT 이름 동기화 후 재시작", UsbMsg::BtSyncMatch, !is_running, C_WARN),
+                ].align_y(iced::Alignment::Center),
+            ])
+            .padding(8)
+            .style(|_: &iced::Theme| container::Style {
+                background: Some(C_SURFACE.into()),
+                border: iced::Border { color: C_WARN, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            })
+        );
+    }
+
+    inner = inner.push(Space::with_height(8));
+    inner = inner.push(
+        text("페어링 모드: Kensington Expert 는 상단 버튼 4개를 동시에 3초간 누릅니다(바닥에 별도 페어링 버튼 없음). 동글(2.4GHz) <-> 블루투스 전환은 기기 버튼으로만 가능하며 소프트웨어로는 바꿀 수 없습니다.")
+            .size(11).color(C_DIM)
+    );
+
+    card(inner)
+}
+
 fn device_row(d: &UsbDevice, disabled: bool) -> Element<'_, UsbMsg> {
     let bg = if d.highlight { Color { r: 0.906, g: 0.976, b: 0.949, a: 1.0 } } else { C_SURFACE };
     let border = if d.highlight { C_OK } else { C_BORDER };
@@ -554,17 +752,25 @@ async fn scan_usb() -> UsbStatus {
         }
     }
 
-    // ktrackball PID
-    let ktb = runner::run("pgrep", &["-x", "ktrackball"]).await;
-    let ktrackball_pid = ktb.output.trim().parse::<u32>().ok();
+    // ktrackball PID.
+    // 실행 파일은 python3 이고 ktrackball 은 스크립트 경로에만 나타나므로
+    // `pgrep -x ktrackball`(프로세스명 완전일치)로는 절대 잡히지 않는다.
+    // 전체 명령줄(-f)에서 mapper 스크립트 경로를 찾아야 한다.
+    // 패턴에 경로를 포함시켜 "trackball_mapper.py" 문자열을 인자로 가진 다른
+    // 프로세스(예: 이 이름을 grep 하는 셸)가 섞이지 않게 한다.
+    let ktb = runner::run("pgrep", &["-f", r"python3?\s+/opt/ktrackball/trackball_mapper\.py"]).await;
+    let ktrackball_pid = ktb.output
+        .lines()
+        .find_map(|l| l.trim().parse::<u32>().ok());
 
     let pointer_speed = read_pointer_speed();
     let tb_speed_factor = read_tb_speed_factor();
     let cursor_size = read_cursor_size().await;
     let helper_installed = helper_ok().await;
+    let bt = scan_bt().await;
 
     UsbStatus { devices, failed_ports, ktrackball_pid, pointer_speed,
-                tb_speed_factor, cursor_size, helper_installed }
+                tb_speed_factor, cursor_size, helper_installed, bt }
 }
 
 /// /etc/ktrackball/config.toml 의 speed_factor 값 (없으면 1.0).
@@ -599,6 +805,144 @@ async fn read_cursor_size() -> i32 {
 }
 
 /// popmgr-helper 가 설치되고 NOPASSWD 로 호출 가능한지.
+/// 블루투스 HID(마우스/트랙볼) 후보로 볼 이름 패턴.
+/// Kensington Expert 는 `ExpertBT5.0` / `ExpertBT3.0` 으로 광고한다(제품명에 Kensington 없음).
+fn is_hid_candidate(name: &str, icon: &str, uuids: &str) -> bool {
+    if uuids.contains("00001812") { return true; }          // HID over GATT
+    if icon == "input-mouse" || icon == "input-keyboard" { return true; }
+    let n = name.to_ascii_lowercase();
+    ["expert", "kensington", "trackball", "slimblade", "orbit", "mouse"]
+        .iter().any(|k| n.contains(k))
+}
+
+/// 현재 블루투스 상태 + HID 후보 목록을 읽는다.
+/// 스캔은 하지 않는다(이미 알려진 기기만). 스캔은 BtPair 에서만 수행.
+async fn scan_bt() -> BtStatus {
+    let show = runner::run_sh("bluetoothctl show 2>/dev/null").await;
+    let powered = show.output.lines().any(|l| l.trim() == "Powered: yes");
+    let rf = runner::run_sh("rfkill list bluetooth 2>/dev/null").await;
+    let blocked = rf.output.lines().any(|l| l.trim().ends_with("blocked: yes"));
+
+    let listing = runner::run_sh("bluetoothctl devices 2>/dev/null").await;
+    let mut devices = Vec::new();
+    for line in listing.output.lines() {
+        // "Device C0:31:F2:BB:80:4A ExpertBT5.0"
+        let mut it = line.split_whitespace();
+        if it.next() != Some("Device") { continue; }
+        let Some(mac) = it.next() else { continue };
+        let name = it.collect::<Vec<_>>().join(" ");
+        let info = runner::run_sh(&format!(
+            "bluetoothctl info {} 2>/dev/null", shell_quote(mac)
+        )).await;
+        let field = |key: &str| -> String {
+            info.output.lines()
+                .find_map(|l| l.trim().strip_prefix(key).map(|v| v.trim().to_string()))
+                .unwrap_or_default()
+        };
+        let icon = field("Icon:");
+        let uuids = info.output.lines().filter(|l| l.contains("UUID:"))
+            .collect::<Vec<_>>().join(" ");
+        let disp = {
+            let n = field("Name:");
+            if n.is_empty() { name.clone() } else { n }
+        };
+        if !is_hid_candidate(&disp, &icon, &uuids) { continue; }
+        devices.push(BtDevice {
+            mac: mac.to_string(),
+            name: disp,
+            paired: field("Paired:") == "yes",
+            connected: field("Connected:") == "yes",
+            trusted: field("Trusted:") == "yes",
+        });
+    }
+    // 연결됨 → 페어링됨 → 나머지 순
+    devices.sort_by_key(|d| (!d.connected, !d.paired));
+    BtStatus { powered, blocked, devices }
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// 스캔 → 페어링 → trust → connect 를 **하나의 bluetoothctl 세션**에서 수행한다.
+///
+/// 명령마다 `bluetoothctl` 을 새로 띄우면 scan 종료와 함께 발견 캐시가 DEL 되어
+/// `Attempting to pair` 직후 중단된다(2026-09-11 실측). coproc 으로 세션을 유지한 채
+/// 순차 입력해야 통과한다. docs/bluetooth-usb-trackball-notes.md 참고.
+async fn bt_pair_flow() -> CmdResult {
+    let script = r#"
+set -u
+coproc BTC { stdbuf -oL bluetoothctl 2>&1; }
+exec 3>&"${BTC[1]}"
+cleanup() { echo "scan off" >&3 2>/dev/null || true; echo "quit" >&3 2>/dev/null || true; }
+trap cleanup EXIT
+
+echo "power on" >&3;      sleep 1
+echo "agent on" >&3;      sleep 1
+echo "default-agent" >&3; sleep 1
+echo "scan on" >&3
+
+# HID 후보가 나타날 때까지 최대 45초 대기
+MAC=""
+for i in $(seq 1 15); do
+  sleep 3
+  while read -r _ m rest; do
+    [ -n "${m:-}" ] || continue
+    info=$(bluetoothctl info "$m" 2>/dev/null)
+    icon=$(printf '%s\n' "$info" | sed -n 's/^\s*Icon:\s*//p')
+    if printf '%s\n' "$info" | grep -q "00001812" \
+       || [ "$icon" = "input-mouse" ] \
+       || printf '%s\n' "$rest" | grep -qiE "expert|kensington|trackball|slimblade|orbit"; then
+      # 이미 연결된 기기는 건너뛴다
+      printf '%s\n' "$info" | grep -q "Connected: yes" && continue
+      MAC="$m"; NAME="$rest"; break
+    fi
+  done < <(bluetoothctl devices 2>/dev/null)
+  [ -n "$MAC" ] && break
+done
+
+if [ -z "$MAC" ]; then
+  echo "트랙볼을 찾지 못했습니다."
+  echo ""
+  echo "Kensington Expert: 상단 버튼 4개를 동시에 3초간 누르면 페어링 모드로 들어갑니다."
+  echo "(바닥에 별도 페어링 버튼은 없습니다)"
+  echo "페어링 모드로 만든 뒤 다시 눌러주세요."
+  exit 1
+fi
+
+echo "발견: $NAME ($MAC)"
+echo "pair $MAC" >&3;    sleep 12
+echo "trust $MAC" >&3;   sleep 3
+echo "connect $MAC" >&3; sleep 10
+
+info=$(bluetoothctl info "$MAC" 2>/dev/null)
+paired=$(printf '%s\n' "$info" | grep -c "Paired: yes" || true)
+conn=$(printf '%s\n'  "$info" | grep -c "Connected: yes" || true)
+
+if [ "$conn" -ge 1 ]; then
+  echo "연결 완료: $NAME"
+  printf '%s\n' "$info" | grep -E "Name:|Paired:|Trusted:|Connected:"
+  # BT 이름은 동글과 다르므로 ktrackball 의 device_match 를 맞춰준다.
+  # 이걸 안 하면 데몬이 장치를 못 찾고 죽어 speed_factor·버튼매핑이 전부 무효가 된다.
+  if [ -x /usr/local/bin/popmgr-helper ]; then
+    echo ""
+    sudo -n /usr/local/bin/popmgr-helper sync-trackball-match 2>&1 || \
+      echo "(ktrackball 설정 동기화 실패 - USB 탭의 [BT 이름 동기화] 버튼을 눌러주세요)"
+  fi
+  exit 0
+elif [ "$paired" -ge 1 ]; then
+  echo "페어링은 됐지만 연결이 안 됐습니다: $NAME"
+  echo "목록의 [연결] 버튼을 눌러보세요."
+  exit 1
+else
+  echo "페어링 실패: $NAME"
+  echo "페어링 모드(버튼 4개 3초)를 다시 만든 뒤 시도하세요."
+  exit 1
+fi
+"#;
+    runner::run_sh(script).await
+}
+
 async fn helper_ok() -> bool {
     if !std::path::Path::new("/usr/local/bin/popmgr-helper").exists() { return false; }
     let r = runner::run_sh("sudo -n /usr/local/bin/popmgr-helper check 2>/dev/null").await;
