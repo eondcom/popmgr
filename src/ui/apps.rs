@@ -2,7 +2,11 @@ use iced::{
     widget::{column, container, row, scrollable, text, text_input, Space},
     Color, Element, Length, Task,
 };
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
 use crate::runner::{self, CmdResult};
+use super::cosmic_tweaks::{is_target_shortcut, parse_shortcut_entries, write_shortcut_updates};
 use super::ime::{action_btn, card, running_bar, C_BLUE, C_BORDER, C_BTN2, C_DIM, C_ERR, C_OK, C_SURFACE, C_SURFACE2, C_TEXT, C_WARN};
 
 #[derive(Debug, Clone)]
@@ -32,7 +36,67 @@ pub struct AppsStatus {
     pub orca_desktop: Option<String>,
     pub orca_icon_ok: bool,
     pub orca_dock_ok: bool,
+    pub recording: RecordingStatus,
+    pub mpv: MpvStatus,
     pub packages: Vec<Package>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlatpakScope { System, User, NotInstalled }
+
+#[derive(Debug, Clone)]
+pub struct RecordingStatus {
+    gsr_scope: FlatpakScope,
+    system_flathub: bool,
+    nvidia_extension: Option<String>,
+    system_runtime: bool,
+    user_runtime: bool,
+    obs_scope: FlatpakScope,
+    obs_runtime_matches: bool,
+    active: bool,
+    shortcut_registered: bool,
+    output_dir: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct MpvStatus {
+    installed: bool,
+    vaapi: VaApiStatus,
+    default_player: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VaApiStatus { Supported, Unsupported, Unknown }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlayerState { Default, InstalledNotDefault, NotInstalled }
+
+const VIDEO_MIME_TYPES: [&str; 9] = [
+    "video/mp4",
+    "video/x-matroska",
+    "video/webm",
+    "video/x-msvideo",
+    "video/quicktime",
+    "video/mpeg",
+    "video/x-flv",
+    "video/3gpp",
+    "video/ogg",
+];
+
+fn xdg_mime_default_args() -> Vec<&'static str> {
+    let mut args = vec!["default", "mpv.desktop"];
+    args.extend(VIDEO_MIME_TYPES);
+    args
+}
+
+fn mpv_player_state(installed: bool, default_is_mpv: bool) -> PlayerState {
+    if !installed {
+        PlayerState::NotInstalled
+    } else if default_is_mpv {
+        PlayerState::Default
+    } else {
+        PlayerState::InstalledNotDefault
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +115,11 @@ pub enum AppsMsg {
     FixKakaotalkIcon,
     FixKakaotalkIme,
     InstallOrca,
+    InstallMpv,
+    SetMpvDefaultPlayer,
+    InstallRecording,
+    RegisterRecordingShortcut,
+    ToggleRecording,
     Done(CmdResult),
 }
 
@@ -299,6 +368,49 @@ echo "참고: 터미널에서 'orca' 를 치면 GNOME 스크린리더가 실행�
 "#;
                 let t = Task::perform(async move { runner::run_stream(script).await }, AppsMsg::Done);
                 (t, None)
+            }
+            AppsMsg::InstallRecording => {
+                let Some(recording) = self.status.as_ref().map(|status| &status.recording) else {
+                    return (Task::none(), Some(CmdResult {
+                        success: false,
+                        output: "상태를 먼저 불러오는 중입니다.".into(),
+                    }));
+                };
+                let Some(extension) = recording.nvidia_extension.clone() else {
+                    return (Task::none(), Some(CmdResult {
+                        success: false,
+                        output: "호스트 NVIDIA 드라이버 버전을 읽지 못했습니다.".into(),
+                    }));
+                };
+                self.running = Some("GPU Screen Recorder 설치·런타임 맞춤 중...".into());
+                let script = recording_install_script(
+                    recording.gsr_scope,
+                    recording.system_flathub,
+                    recording.obs_scope,
+                    &extension,
+                );
+                let t = Task::perform(async move { runner::run_stream(&script).await }, AppsMsg::Done);
+                (t, None)
+            }
+            AppsMsg::InstallMpv => {
+                self.running = Some("mpv·VA-API 정보 도구 설치 중...".into());
+                let script = "pkexec apt-get install -y mpv vainfo";
+                let t = Task::perform(async move { runner::run_stream(script).await }, AppsMsg::Done);
+                (t, None)
+            }
+            AppsMsg::SetMpvDefaultPlayer => {
+                self.running = Some("mpv를 기본 동영상 플레이어로 지정 중...".into());
+                let t = Task::perform(async { set_mpv_default_player().await }, AppsMsg::Done);
+                (t, None)
+            }
+            AppsMsg::RegisterRecordingShortcut => {
+                let result = register_recording_shortcut();
+                (Task::none(), Some(result))
+            }
+            AppsMsg::ToggleRecording => {
+                let result = record_toggle_cli_result();
+                let refresh = Task::perform(async { scan_apps().await }, AppsMsg::Refreshed);
+                (refresh, Some(result))
             }
             AppsMsg::InstallKakaotalk => {
                 self.running = Some("KakaoTalk 검증 환경 설치 중...".into());
@@ -1040,6 +1152,14 @@ EOF
 
         // Orca 카드
         col = col.push(orca_card(self.status.as_ref(), is_running));
+        col = col.push(Space::with_height(12));
+
+        // GPU Screen Recorder 카드
+        col = col.push(recording_card(self.status.as_ref(), is_running));
+        col = col.push(Space::with_height(12));
+
+        // 동영상 플레이어 카드
+        col = col.push(mpv_card(self.status.as_ref(), is_running));
         col = col.push(Space::with_height(20));
 
         // 프로그램 제거 섹션
@@ -1264,6 +1384,113 @@ fn orca_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'static, Ap
     )
 }
 
+fn recording_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'static, AppsMsg> {
+    let recording = status.map(|status| &status.recording);
+    let gsr_scope = recording.map(|s| s.gsr_scope).unwrap_or(FlatpakScope::NotInstalled);
+    let gsr_text = match gsr_scope {
+        FlatpakScope::System => "GSR: 시스템 범위 — 정상",
+        FlatpakScope::User => "GSR: 사용자 범위 — 캡처 불가, 시스템으로 재설치 필요",
+        FlatpakScope::NotInstalled => "GSR: 미설치",
+    };
+    let gsr_color = match gsr_scope {
+        FlatpakScope::System => C_OK,
+        FlatpakScope::User => C_WARN,
+        FlatpakScope::NotInstalled => C_DIM,
+    };
+    let flathub = if recording.is_some_and(|s| s.system_flathub) { "있음" } else { "없음" };
+    let extension = recording
+        .and_then(|s| s.nvidia_extension.as_deref())
+        .unwrap_or("호스트 NVIDIA 드라이버 없음");
+    let system_runtime = if recording.is_some_and(|s| s.system_runtime) { "있음" } else { "없음" };
+    let user_runtime = if recording.is_some_and(|s| s.user_runtime) { "있음" } else { "없음" };
+    let obs = match recording.map(|s| s.obs_scope).unwrap_or(FlatpakScope::NotInstalled) {
+        FlatpakScope::NotInstalled => "OBS: 미설치",
+        _ if recording.is_some_and(|s| s.obs_runtime_matches) => "OBS NVENC: 런타임 일치",
+        _ => "OBS NVENC: 런타임 불일치",
+    };
+    let active = recording.is_some_and(|s| s.active);
+    let shortcut = if recording.is_some_and(|s| s.shortcut_registered) { "등록됨" } else { "미등록" };
+    let output = recording
+        .map(|s| s.output_dir.display().to_string())
+        .unwrap_or_else(|| recording_output_dir().display().to_string());
+    let left = column![
+        text("화면 녹화 (GPU Screen Recorder · NVENC)").size(14).color(C_TEXT),
+        Space::with_height(3),
+        text(gsr_text).size(11).color(gsr_color),
+        text(format!("시스템 flathub 원격: {flathub}")).size(11).color(C_DIM),
+        text(format!("NVIDIA 런타임 {extension}: system {system_runtime} · user {user_runtime}"))
+            .size(11).color(C_DIM),
+        text(obs).size(11).color(C_DIM),
+        text(if active { "녹화: 진행 중" } else { "녹화: 정지" }).size(11)
+            .color(if active { C_OK } else { C_DIM }),
+        text(format!("Ctrl+Shift+6: {shortcut} · 출력: {output}")).size(11).color(C_DIM),
+        Space::with_height(3),
+        text("설치 시 시스템 인증(polkit) 창이 뜹니다.").size(10).color(C_WARN),
+    ];
+    let mut right = column![].spacing(6).align_x(iced::Alignment::End);
+    right = right.push(action_btn("설치/런타임 맞추기", AppsMsg::InstallRecording, !disabled, C_OK));
+    right = right.push(action_btn(
+        "단축키 등록 (Ctrl+Shift+6)",
+        AppsMsg::RegisterRecordingShortcut,
+        !disabled,
+        C_BLUE,
+    ));
+    right = right.push(action_btn(
+        if active { "지금 녹화 정지" } else { "지금 녹화 시작" },
+        AppsMsg::ToggleRecording,
+        !disabled,
+        C_BTN2,
+    ));
+    card(row![left.width(Length::Fill), right].align_y(iced::Alignment::Center))
+}
+
+fn mpv_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'static, AppsMsg> {
+    let mpv = status.map(|status| &status.mpv);
+    let installed = mpv.is_some_and(|status| status.installed);
+    let default_player = mpv.and_then(|status| status.default_player.as_deref());
+    let default_is_mpv = default_player == Some("mpv.desktop");
+    let player_state = mpv_player_state(installed, default_is_mpv);
+    let (status_text, status_color) = match player_state {
+        PlayerState::Default => ("[OK] mpv 기본 플레이어로 설정됨", C_OK),
+        PlayerState::InstalledNotDefault => ("[권장] mpv 설치됨 — 기본 플레이어 아님", C_WARN),
+        PlayerState::NotInstalled => ("[!] mpv 미설치", C_ERR),
+    };
+    let vaapi = mpv.map(|status| status.vaapi).unwrap_or(VaApiStatus::Unknown);
+    let vaapi_text = match vaapi {
+        VaApiStatus::Supported => "VA-API 디코딩: 지원됨 (VAEntrypointVLD)",
+        VaApiStatus::Unsupported => "VA-API 디코딩: 지원 정보 없음",
+        VaApiStatus::Unknown => "VA-API 디코딩: 확인 불가 (vainfo 미설치)",
+    };
+    let vaapi_color = match vaapi {
+        VaApiStatus::Supported => C_OK,
+        VaApiStatus::Unsupported => C_WARN,
+        VaApiStatus::Unknown => C_DIM,
+    };
+    let default_text = match default_player {
+        Some("mpv.desktop") => "현재 기본 플레이어: mpv.desktop".to_string(),
+        Some(player) => format!("현재: {player}"),
+        None => "현재 기본 플레이어: 확인 불가".to_string(),
+    };
+    let left = column![
+        text("동영상 플레이어 (mpv · VA-API)").size(14).color(C_TEXT),
+        Space::with_height(3),
+        text(status_text).size(12).color(status_color),
+        text(vaapi_text).size(11).color(vaapi_color),
+        text(default_text).size(11).color(C_DIM),
+    ];
+    let mut right = column![].spacing(6).align_x(iced::Alignment::End);
+    if !installed {
+        right = right.push(action_btn("mpv 설치", AppsMsg::InstallMpv, !disabled, C_OK));
+    }
+    right = right.push(action_btn(
+        "기본 플레이어로 지정",
+        AppsMsg::SetMpvDefaultPlayer,
+        !disabled && installed,
+        C_BLUE,
+    ));
+    card(row![left.width(Length::Fill), right].align_y(iced::Alignment::Center))
+}
+
 fn pkg_row(idx: usize, pkg: &Package, disabled: bool) -> Element<'_, AppsMsg> {
     let bg = if pkg.marked { Color { r: 0.996, g: 0.925, b: 0.933, a: 1.0 } } else { C_SURFACE };
     let border = if pkg.marked { C_ERR } else { C_BORDER };
@@ -1311,6 +1538,259 @@ fn pkg_row(idx: usize, pkg: &Package, disabled: bool) -> Element<'_, AppsMsg> {
         ..Default::default()
     })
     .into()
+}
+
+const GSR_APP: &str = "com.dec05eba.gpu_screen_recorder";
+const OBS_APP: &str = "com.obsproject.Studio";
+
+fn flatpak_scope(list: &str, app: &str) -> FlatpakScope {
+    let mut user = false;
+    for line in list.lines() {
+        let mut columns = line.split_whitespace();
+        if columns.next() != Some(app) {
+            continue;
+        }
+        match columns.next() {
+            Some("system") => return FlatpakScope::System,
+            Some("user") => user = true,
+            _ => {}
+        }
+    }
+    if user { FlatpakScope::User } else { FlatpakScope::NotInstalled }
+}
+
+fn flatpak_in_scope(list: &str, app: &str, scope: &str) -> bool {
+    list.lines().any(|line| {
+        let mut columns = line.split_whitespace();
+        columns.next() == Some(app) && columns.next() == Some(scope)
+    })
+}
+
+fn nvidia_runtime_extension(version: &str) -> Option<String> {
+    let version = version.trim();
+    if version.is_empty() {
+        return None;
+    }
+    Some(format!("org.freedesktop.Platform.GL.nvidia-{}", version.replace('.', "-")))
+}
+
+fn recording_output_dir() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp")).join("Videos/Recordings")
+}
+
+fn shortcuts_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| {
+        home.join(".config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom")
+    })
+}
+
+fn recording_shortcut_registered(path: &Path) -> bool {
+    std::fs::read_to_string(path).ok().is_some_and(|content| {
+        parse_shortcut_entries(&content).iter().any(|entry| is_target_shortcut(entry, "6"))
+    })
+}
+
+fn recording_install_script(
+    gsr_scope: FlatpakScope,
+    system_flathub: bool,
+    obs_scope: FlatpakScope,
+    extension: &str,
+) -> String {
+    let mut script = String::from("set -e\n");
+    if gsr_scope == FlatpakScope::User {
+        script.push_str(&format!("flatpak uninstall --user -y --noninteractive {GSR_APP}\n"));
+    }
+    if !system_flathub {
+        script.push_str("flatpak remote-add --system --if-not-exists flathub ");
+        script.push_str("https://dl.flathub.org/repo/flathub.flatpakrepo\n");
+    }
+    script.push_str(&format!(
+        "flatpak install --system -y --noninteractive flathub {GSR_APP} {extension}\n"
+    ));
+    if obs_scope == FlatpakScope::User {
+        script.push_str(&format!(
+            "flatpak install --user -y --noninteractive flathub {extension}\n"
+        ));
+    }
+    script
+}
+
+fn newest_file(dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir).ok()?.filter_map(Result::ok).filter_map(|entry| {
+        let metadata = entry.metadata().ok()?;
+        if metadata.is_file() {
+            Some((metadata.modified().ok()?, entry.path()))
+        } else {
+            None
+        }
+    }).max_by_key(|(modified, _)| *modified).map(|(_, path)| path)
+}
+
+// `-ro`는 리플레이(`-r`) 모드 전용이라 일반 녹화에 쓰면 파일이 전혀 생성되지 않는다(2026-09-14 실측).
+// 일반 녹화는 `-o <파일>`이 필수(man: "Required except when outputting to stdout").
+fn recording_start_args(output_file: &Path) -> Vec<String> {
+    vec![
+        "flatpak".into(), "run".into(), "--command=gpu-screen-recorder".into(), GSR_APP.into(),
+        "-w".into(), "portal".into(), "-restore-portal-session".into(), "yes".into(),
+        "-f".into(), "60".into(), "-k".into(), "h264".into(), "-encoder".into(), "gpu".into(),
+        "-fallback-cpu-encoding".into(), "no".into(), "-a".into(), "default_output".into(),
+        "-ac".into(), "opus".into(), "-c".into(), "mp4".into(), "-cursor".into(), "yes".into(),
+        "-o".into(), output_file.display().to_string(),
+    ]
+}
+
+fn recording_output_file(output_dir: &Path) -> PathBuf {
+    let ts = chrono_like_timestamp();
+    output_dir.join(format!("Recording_{ts}.mp4"))
+}
+
+/// `chrono` 의존성 없이 로컬 타임스탬프 문자열을 만든다(다른 탭들의 관례와 동일).
+fn chrono_like_timestamp() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    civil_datetime_string(now)
+}
+
+/// UNIX 초(UTC) → "YYYY-MM-DD_HH-MM-SS". 순수 함수라 테스트가 고정 입력으로 검증한다.
+fn civil_datetime_string(secs: u64) -> String {
+    let days = secs / 86400;
+    let secs_of_day = secs % 86400;
+    // 1970-01-01 기준 날짜 계산 (civil_from_days, Howard Hinnant 알고리즘)
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    let (h, min, s) = (secs_of_day / 3600, (secs_of_day % 3600) / 60, secs_of_day % 60);
+    format!("{y:04}-{m:02}-{d:02}_{h:02}-{min:02}-{s:02}")
+}
+
+fn notify(summary: &str, body: &str) {
+    let _ = Command::new("notify-send").args([summary, body]).status();
+}
+
+fn record_toggle_cli_result() -> CmdResult {
+    // 실제 바이너리 이름은 15자("gpu-screen-reco")로 잘려 `-x`가 절대 매칭되지 않는다(2026-09-14 실측).
+    // `-f`로 실행 명령행 전체를 보되 ` -w`를 붙여 flatpak 래퍼(`--command=... com.dec05eba...`)는 제외한다.
+    const PGREP_PATTERN: &str = "gpu-screen-recorder -w";
+    let active = Command::new("pgrep").args(["-f", PGREP_PATTERN]).status()
+        .is_ok_and(|status| status.success());
+    let output_dir = recording_output_dir();
+    if active {
+        let stopped = Command::new("pkill").args(["-INT", "-f", PGREP_PATTERN])
+            .status().is_ok_and(|status| status.success());
+        if !stopped {
+            return CmdResult { success: false, output: "녹화 정지 신호 전송 실패".into() };
+        }
+        std::thread::sleep(Duration::from_secs(1));
+        let filename = newest_file(&output_dir).and_then(|path| {
+            path.file_name().map(|name| name.to_string_lossy().into_owned())
+        }).unwrap_or_else(|| "저장 파일을 찾지 못했습니다".into());
+        notify("녹화 저장됨", &filename);
+        return CmdResult { success: true, output: format!("녹화 저장됨: {filename}") };
+    }
+    let apps = Command::new("flatpak").args(["list", "--app", "--columns=application,installation"])
+        .output().map(|output| String::from_utf8_lossy(&output.stdout).into_owned()).unwrap_or_default();
+    match flatpak_scope(&apps, GSR_APP) {
+        FlatpakScope::System => {}
+        FlatpakScope::User => {
+            notify("녹화 시작 불가", "GPU Screen Recorder를 시스템 범위로 재설치하세요.");
+            return CmdResult { success: false, output: "GSR가 사용자 범위에 설치되어 캡처할 수 없습니다.".into() };
+        }
+        FlatpakScope::NotInstalled => {
+            notify("녹화 시작 불가", "GPU Screen Recorder를 먼저 시스템 범위로 설치하세요.");
+            return CmdResult { success: false, output: "GPU Screen Recorder가 설치되지 않았습니다.".into() };
+        }
+    }
+    if let Err(error) = std::fs::create_dir_all(&output_dir) {
+        return CmdResult { success: false, output: format!("녹화 폴더 생성 실패: {error}") };
+    }
+    let output_file = recording_output_file(&output_dir);
+    let args = recording_start_args(&output_file);
+    let started = Command::new("setsid").args(&args).stdin(Stdio::null()).stdout(Stdio::null())
+        .stderr(Stdio::null()).spawn();
+    match started {
+        Ok(_) => {
+            notify("녹화 시작", "Ctrl+Shift+6 으로 정지");
+            CmdResult { success: true, output: "녹화를 시작했습니다.".into() }
+        }
+        Err(error) => CmdResult { success: false, output: format!("녹화 시작 실패: {error}") },
+    }
+}
+
+pub fn record_toggle_cli() -> i32 {
+    if record_toggle_cli_result().success { 0 } else { 1 }
+}
+
+fn register_recording_shortcut() -> CmdResult {
+    let Some(path) = shortcuts_config_path() else {
+        return CmdResult { success: false, output: "홈 디렉터리를 찾을 수 없습니다.".into() };
+    };
+    let executable = match std::env::current_exe() {
+        Ok(path) if path.is_absolute() => path,
+        Ok(_) => return CmdResult { success: false, output: "popmgr 절대 경로를 찾지 못했습니다.".into() },
+        Err(error) => return CmdResult { success: false, output: format!("popmgr 경로 확인 실패: {error}") },
+    };
+    let command = format!("{} --record-toggle", executable.display());
+    if let Err(error) = write_shortcut_updates(&path, &[("6", command.clone())]) {
+        return CmdResult { success: false, output: format!("단축키 저장 실패: {error}") };
+    }
+    match std::fs::read_to_string(&path).and_then(|content| {
+        std::fs::write(&path, add_recording_shortcut_description(&content, &command))
+    }) {
+        Ok(()) => CmdResult {
+            success: true,
+            output: "Ctrl+Shift+6 녹화 토글 단축키를 등록했습니다: popmgr 화면 녹화 토글".into(),
+        },
+        Err(error) => CmdResult { success: false, output: format!("단축키 설명 저장 실패: {error}") },
+    }
+}
+
+fn add_recording_shortcut_description(content: &str, command: &str) -> String {
+    let entry = format!("(modifiers: [Ctrl, Shift], key: \"6\"): Spawn(\"{command}\")");
+    let described = format!(
+        "(modifiers: [Ctrl, Shift], key: \"6\", description: Some(\"popmgr 화면 녹화 토글\")): \\
+         Spawn(\"{command}\")"
+    );
+    content.replace(&entry, &described)
+}
+
+async fn set_mpv_default_player() -> CmdResult {
+    let args = xdg_mime_default_args();
+    let set_result = runner::run("xdg-mime", &args).await;
+    let mut failed_mime_types = Vec::new();
+    for mime_type in VIDEO_MIME_TYPES {
+        let result = runner::run("xdg-mime", &["query", "default", mime_type]).await;
+        if result.output.trim() != "mpv.desktop" {
+            failed_mime_types.push(mime_type);
+        }
+    }
+    if failed_mime_types.is_empty() && set_result.success {
+        CmdResult {
+            success: true,
+            output: "mpv를 모든 동영상 MIME 타입의 기본 플레이어로 지정했습니다.".into(),
+        }
+    } else if failed_mime_types.is_empty() {
+        CmdResult {
+            success: false,
+            output: format!("기본 플레이어 지정 명령 실패:\n{}", set_result.output.trim()),
+        }
+    } else {
+        CmdResult {
+            success: false,
+            output: format!(
+                "mpv.desktop으로 지정되지 않은 MIME 타입: {}",
+                failed_mime_types.join(", "),
+            ),
+        }
+    }
 }
 
 async fn scan_apps() -> AppsStatus {
@@ -1454,6 +1934,62 @@ async fn scan_apps() -> AppsStatus {
          $HOME/.config/cosmic/com.system76.CosmicAppList/v1/favorites 2>/dev/null"
     ]).await.success;
 
+    let flatpak_scopes = runner::run("flatpak", &[
+        "list", "--app", "--columns=application,installation",
+    ]).await.output;
+    let gsr_scope = flatpak_scope(&flatpak_scopes, GSR_APP);
+    let obs_scope = flatpak_scope(&flatpak_scopes, OBS_APP);
+    let system_flathub = runner::run("flatpak", &[
+        "remotes", "--system", "--columns=name",
+    ]).await.output.lines().any(|name| name.trim() == "flathub");
+    let nvidia_extension = std::fs::read_to_string("/sys/module/nvidia/version")
+        .ok().and_then(|version| nvidia_runtime_extension(&version));
+    let runtime_scopes = runner::run("flatpak", &[
+        "list", "--runtime", "--columns=application,installation",
+    ]).await.output;
+    let system_runtime = nvidia_extension.as_deref()
+        .is_some_and(|extension| flatpak_in_scope(&runtime_scopes, extension, "system"));
+    let user_runtime = nvidia_extension.as_deref()
+        .is_some_and(|extension| flatpak_in_scope(&runtime_scopes, extension, "user"));
+    let obs_runtime_matches = match obs_scope {
+        FlatpakScope::System => system_runtime,
+        FlatpakScope::User => user_runtime,
+        FlatpakScope::NotInstalled => false,
+    };
+    // `-x`는 15자로 잘린 프로세스 이름에 매칭되지 않는다 — `-f`로 실행 명령행을 본다.
+    let active = runner::run("pgrep", &["-f", "gpu-screen-recorder -w"]).await.success;
+    let shortcut_registered = shortcuts_config_path().is_some_and(|path| {
+        recording_shortcut_registered(&path)
+    });
+    let recording = RecordingStatus {
+        gsr_scope,
+        system_flathub,
+        nvidia_extension,
+        system_runtime,
+        user_runtime,
+        obs_scope,
+        obs_runtime_matches,
+        active,
+        shortcut_registered,
+        output_dir: recording_output_dir(),
+    };
+
+    let installed = runner::run("which", &["mpv"]).await.success;
+    let vainfo_installed = runner::run("which", &["vainfo"]).await.success;
+    let vaapi = if vainfo_installed {
+        let vainfo = runner::run("vainfo", &[]).await;
+        if vainfo.output.contains("VAEntrypointVLD") {
+            VaApiStatus::Supported
+        } else {
+            VaApiStatus::Unsupported
+        }
+    } else {
+        VaApiStatus::Unknown
+    };
+    let default_player = runner::run("xdg-mime", &["query", "default", "video/mp4"]).await
+        .output.lines().next().map(|line| line.trim().to_string()).filter(|line| !line.is_empty());
+    let mpv = MpvStatus { installed, vaapi, default_player };
+
     AppsStatus {
         kakaotalk_installed,
         kakaotalk_launcher,
@@ -1468,6 +2004,154 @@ async fn scan_apps() -> AppsStatus {
         orca_desktop,
         orca_icon_ok,
         orca_dock_ok,
+        recording,
+        mpv,
         packages,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::cosmic_tweaks::replace_shortcut_entries;
+
+    const SEVEN_SHORTCUTS: &str = r#"{
+    (modifiers: [Ctrl], key: "F1"): Spawn("one"),
+    (modifiers: [Ctrl], key: "F2"): Spawn("two"),
+    (modifiers: [Ctrl], key: "F3"): Spawn("three"),
+    (modifiers: [Ctrl], key: "F4"): Spawn("four"),
+    (modifiers: [Ctrl], key: "F5"): Spawn("five"),
+    (modifiers: [Ctrl], key: "F6"): Spawn("six"),
+    (modifiers: [Ctrl], key: "F7"): Spawn("seven"),
+}"#;
+
+    #[test]
+    fn video_mime_types_have_nine_unique_entries() {
+        let unique: std::collections::HashSet<_> = VIDEO_MIME_TYPES.iter().collect();
+        assert_eq!(VIDEO_MIME_TYPES.len(), 9);
+        assert_eq!(unique.len(), VIDEO_MIME_TYPES.len());
+    }
+
+    #[test]
+    fn xdg_mime_default_args_include_every_video_mime_and_one_desktop_entry() {
+        let args = xdg_mime_default_args();
+        assert_eq!(args.iter().filter(|arg| **arg == "mpv.desktop").count(), 1);
+        for mime_type in VIDEO_MIME_TYPES {
+            assert!(args.contains(&mime_type), "missing {mime_type}");
+        }
+    }
+
+    #[test]
+    fn mpv_player_state_is_not_installed_without_mpv() {
+        assert_eq!(mpv_player_state(false, false), PlayerState::NotInstalled);
+    }
+
+    #[test]
+    fn mpv_player_state_recommends_default_when_mpv_is_not_selected() {
+        assert_eq!(mpv_player_state(true, false), PlayerState::InstalledNotDefault);
+    }
+
+    #[test]
+    fn mpv_player_state_is_default_when_mpv_is_selected() {
+        assert_eq!(mpv_player_state(true, true), PlayerState::Default);
+    }
+
+    #[test]
+    fn determines_gsr_install_scope_from_flatpak_list_fixtures() {
+        assert_eq!(flatpak_scope("com.dec05eba.gpu_screen_recorder\tsystem", GSR_APP), FlatpakScope::System);
+        assert_eq!(flatpak_scope("com.dec05eba.gpu_screen_recorder\tuser", GSR_APP), FlatpakScope::User);
+        assert_eq!(flatpak_scope("com.obsproject.Studio\tuser", GSR_APP), FlatpakScope::NotInstalled);
+    }
+
+    #[test]
+    fn converts_host_nvidia_version_to_runtime_extension() {
+        assert_eq!(
+            nvidia_runtime_extension("580.173.02\n").as_deref(),
+            Some("org.freedesktop.Platform.GL.nvidia-580-173-02"),
+        );
+    }
+
+    #[test]
+    fn install_fix_script_orders_user_uninstall_remote_system_install_and_obs_runtime() {
+        let extension = "org.freedesktop.Platform.GL.nvidia-580-173-02";
+        let script = recording_install_script(FlatpakScope::User, false, FlatpakScope::User, extension);
+        let uninstall = script.find("flatpak uninstall --user -y --noninteractive").unwrap();
+        let remote = script.find("flatpak remote-add --system --if-not-exists flathub").unwrap();
+        let system = script.find("flatpak install --system -y --noninteractive flathub").unwrap();
+        let user = script.rfind("flatpak install --user -y --noninteractive flathub").unwrap();
+        assert!(uninstall < remote && remote < system && system < user);
+        assert!(script.contains(&format!("{GSR_APP} {extension}")));
+        assert!(script.contains(&format!("flathub {extension}")));
+    }
+
+    #[test]
+    fn toggle_start_command_contains_every_required_gsr_flag() {
+        let command = recording_start_args(Path::new("/tmp/Recordings/Recording_x.mp4")).join(" ");
+        for flag in [
+            "--command=gpu-screen-recorder", "-w portal", "-restore-portal-session yes",
+            "-f 60", "-k h264", "-encoder gpu", "-fallback-cpu-encoding no",
+            "-a default_output", "-ac opus", "-c mp4", "-cursor yes",
+            "-o /tmp/Recordings/Recording_x.mp4",
+        ] {
+            assert!(command.contains(flag), "missing {flag}");
+        }
+        // `-ro`는 리플레이 모드 전용이라 일반 녹화에서는 파일이 생성되지 않는다(회귀 방지).
+        assert!(!command.contains("-ro "), "must not use -ro for regular recording: {command}");
+    }
+
+    #[test]
+    fn recording_output_file_has_mp4_extension_under_the_given_directory() {
+        let dir = Path::new("/tmp/Recordings");
+        let file = recording_output_file(dir);
+        assert_eq!(file.parent(), Some(dir));
+        assert_eq!(file.extension().and_then(|e| e.to_str()), Some("mp4"));
+        assert!(file.file_name().unwrap().to_str().unwrap().starts_with("Recording_"));
+    }
+
+    #[test]
+    fn civil_datetime_string_matches_known_unix_time() {
+        // 2026-09-14 02:59:51 UTC = 1789354791 (date -u 로 실측 대조)
+        assert_eq!(civil_datetime_string(1789354791), "2026-09-14_02-59-51");
+    }
+
+    #[test]
+    fn pgrep_pattern_matches_the_actual_gsr_process_command_line() {
+        // 2026-09-14 실측(포털 캡처 8초 녹화): bwrap 이 실행하는 실제 gsr 프로세스의
+        // /proc/<pid>/comm 은 "gpu-screen-reco"(15자 절단, pgrep -x 로는 매칭 불가)이지만
+        // /proc/<pid>/cmdline 은 "gpu-screen-recorder -w portal ..." 그대로다.
+        // flatpak 실행 래퍼(`flatpak run --command=gpu-screen-recorder com.dec05eba...`)에는
+        // "gpu-screen-recorder" 뒤에 " -w" 가 오지 않으므로 -f 패턴이 래퍼를 오매칭하지 않는다.
+        let real_gsr_cmdline =
+            "gpu-screen-recorder -w portal -restore-portal-session yes -f 30 -o /tmp/x.mp4";
+        let flatpak_wrapper =
+            "flatpak run --command=gpu-screen-recorder com.dec05eba.gpu_screen_recorder -w portal";
+        const PATTERN: &str = "gpu-screen-recorder -w";
+        assert!(real_gsr_cmdline.contains(PATTERN));
+        assert!(!flatpak_wrapper.contains(PATTERN));
+    }
+
+    #[test]
+    fn adds_ctrl_shift_six_without_reordering_or_reformatting_existing_shortcuts() {
+        let updated = replace_shortcut_entries(
+            SEVEN_SHORTCUTS,
+            &[("6", "/absolute/popmgr --record-toggle".into())],
+        );
+        let described = add_recording_shortcut_description(&updated, "/absolute/popmgr --record-toggle");
+        assert!(described.starts_with(&SEVEN_SHORTCUTS[..SEVEN_SHORTCUTS.len() - 2]));
+        assert!(described.contains("key: \"6\", description: Some(\"popmgr 화면 녹화 토글\")"));
+        assert_eq!(parse_shortcut_entries(&described).len(), 8);
+    }
+
+    #[test]
+    fn newest_file_selection_picks_latest_file_in_temp_directory() {
+        let root = std::env::temp_dir().join(format!("popmgr-recording-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let older = root.join("older.mp4");
+        let newer = root.join("newer.mp4");
+        std::fs::write(&older, "old").unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&newer, "new").unwrap();
+        assert_eq!(newest_file(&root).as_deref(), Some(newer.as_path()));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

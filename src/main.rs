@@ -13,6 +13,7 @@ use ui::{
     disk::{DiskMsg, DiskState},
     display::{DisplayMsg, DisplayState},
     ime::{ImeMsg, ImeState},
+    monitor::{self, MonitorMsg, MonitorState},
     power::{PowerMsg, PowerState},
     printer::{PrinterMsg, PrinterState},
     usb::{UsbMsg, UsbState},
@@ -39,7 +40,7 @@ fn app_theme() -> iced::Theme {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Tab { Ime, Usb, Audio, Disk, Display, Power, Cosmic, Printer, Apps }
+enum Tab { Ime, Usb, Audio, Disk, Display, Power, Monitor, Cosmic, Printer, Apps }
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -50,6 +51,7 @@ enum Message {
     Disk(DiskMsg),
     Display(DisplayMsg),
     Power(PowerMsg),
+    Monitor(MonitorMsg),
     Cosmic(CosmicMsg),
     Printer(PrinterMsg),
     Apps(AppsMsg),
@@ -65,6 +67,7 @@ struct App {
     disk: DiskState,
     display: DisplayState,
     power: PowerState,
+    monitor: MonitorState,
     cosmic: CosmicState,
     printer: PrinterState,
     apps: AppsState,
@@ -84,6 +87,17 @@ fn main() -> iced::Result {
         let r = rt.block_on(ui::ime::fix_fcitx5_behavior());
         println!("{}", r.output);
         std::process::exit(if r.success { 0 } else { 1 });
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--hw-sample") {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        println!("{}", runtime.block_on(monitor::hw_sample_text_async()));
+        return Ok(());
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--turbo") {
+        std::process::exit(monitor::turbo_cli(&args));
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--record-toggle") {
+        std::process::exit(ui::apps::record_toggle_cli());
     }
 
     if let Err(msg) = acquire_single_instance_lock() {
@@ -222,6 +236,7 @@ fn init() -> (App, Task<Message>) {
         disk: DiskState::new(),
         display: DisplayState::new(),
         power: PowerState::new(),
+        monitor: MonitorState::new(),
         cosmic: CosmicState::new(),
         printer: PrinterState::new(),
         apps: AppsState::new(),
@@ -236,6 +251,8 @@ fn init() -> (App, Task<Message>) {
         Task::perform(async { () }, |_| Message::Cosmic(CosmicMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Printer(PrinterMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Apps(AppsMsg::Refresh)),
+        MonitorState::initial_check().map(Message::Monitor),
+        Task::perform(async { () }, |_| Message::Monitor(MonitorMsg::Tick)),
     ]);
     (app, task)
 }
@@ -256,23 +273,27 @@ fn subscription(app: &App) -> Subscription<Message> {
         Subscription::none()
     };
 
+    let monitor_tick = if app.tab == Tab::Monitor || app.monitor.protect_enabled() {
+        iced::time::every(std::time::Duration::from_secs(2)).map(|_| Message::Monitor(MonitorMsg::Tick))
+    } else { Subscription::none() };
+
     // 오디오/디스크 탭: 장치 상태 자동 새로고침 (꽂으면 바로 반영)
     match app.tab {
         Tab::Audio => {
             let audio = iced::time::every(std::time::Duration::from_secs(2))
                 .map(|_| Message::Audio(AudioMsg::Refresh));
-            Subscription::batch([drain, ime_watch, power_tick, audio])
+            Subscription::batch([drain, ime_watch, power_tick, audio, monitor_tick])
         }
         Tab::Disk => {
             let disk = iced::time::every(std::time::Duration::from_secs(2))
                 .map(|_| Message::Disk(DiskMsg::Refresh));
-            Subscription::batch([drain, ime_watch, power_tick, disk])
+            Subscription::batch([drain, ime_watch, power_tick, disk, monitor_tick])
         }
         // 다른 탭에서도 느린 주기로 오디오 감시 — 고정 설정 자동 복원이 항상 동작하도록
         _ => {
             let audio_slow = iced::time::every(std::time::Duration::from_secs(5))
                 .map(|_| Message::Audio(AudioMsg::Refresh));
-            Subscription::batch([drain, ime_watch, power_tick, audio_slow])
+            Subscription::batch([drain, ime_watch, power_tick, audio_slow, monitor_tick])
         }
     }
 }
@@ -309,6 +330,11 @@ fn update(app: &mut App, msg: Message) -> Task<Message> {
             let (task, res) = app.power.update(m);
             if let Some(r) = res { push_log(&mut app.output, r); }
             task.map(Message::Power)
+        }
+        Message::Monitor(m) => {
+            let (task, res) = app.monitor.update(m);
+            if let Some(r) = res { push_log(&mut app.output, r); }
+            task.map(Message::Monitor)
         }
         Message::Cosmic(m) => {
             let (task, res) = app.cosmic.update(m);
@@ -363,6 +389,7 @@ fn view(app: &App) -> Element<'_, Message> {
         Tab::Disk   => app.disk.view().map(Message::Disk),
         Tab::Display => app.display.view().map(Message::Display),
         Tab::Power   => app.power.view().map(Message::Power),
+        Tab::Monitor => app.monitor.view().map(Message::Monitor),
         Tab::Cosmic => app.cosmic.view().map(Message::Cosmic),
         Tab::Printer => app.printer.view().map(Message::Printer),
         Tab::Apps   => app.apps.view().map(Message::Apps),
@@ -390,6 +417,7 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
         (Tab::Disk,   "디스크",     "외장하드 / 마운트"),
         (Tab::Display, "디스플레이", "모니터 밝기"),
         (Tab::Power,  "전원",       "절전 / 예약"),
+        (Tab::Monitor, "모니터",    "온도 / 과열 보호"),
         (Tab::Cosmic, "COSMIC",     "COSMIC 트윅"),
         (Tab::Printer, "프린터",    "등록 / 문제 진단"),
         (Tab::Apps,   "앱 관리",    "설치 / 제거"),
