@@ -80,6 +80,11 @@ fn main() -> iced::Result {
         println!("{}", r.output);
         std::process::exit(if r.success { 0 } else { 1 });
     }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-fcitx5-gtk-bug") {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        println!("{}", runtime.block_on(ui::ime::gtk_module_bug_text()));
+        return Ok(());
+    }
     if args.get(1).map(|s| s.as_str()) == Some("--hw-sample") {
         let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
         println!("{}", runtime.block_on(monitor::hw_sample_text_async()));

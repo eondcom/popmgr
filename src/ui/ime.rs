@@ -139,6 +139,7 @@ pub struct ImeStatus {
     pub libreoffice_compat_installed: bool,
     // fcitx5 전역 설정의 한/영 상태 정책 (fcitx5 활성일 때만 Some)
     pub fcitx5_behavior: Option<Fcitx5Behavior>,
+    pub gtk_module_bug: Option<GtkModuleBugStatus>,
     // fcitx5 활성인데 미설치인 툴킷 프론트엔드(IM 모듈) 패키지
     pub fcitx5_missing_frontends: Vec<&'static str>,
     // systemd 유닛과 함께 fcitx5 를 또 띄우는 xdg 자동실행 항목 (fcitx5 활성일 때만)
@@ -433,6 +434,10 @@ impl ImeState {
                 col = col.push(Space::with_height(14));
                 col = col.push(fcitx5_dup_card(&st.fcitx5_dup_launchers, st.fcitx5_instances, is_running));
             }
+            if st.active == Some(ImeKind::Fcitx5) {
+                col = col.push(Space::with_height(14));
+                col = col.push(gtk_module_bug_card(st.gtk_module_bug.as_ref()));
+            }
             if let Some(ref beh) = st.fcitx5_behavior {
                 col = col.push(Space::with_height(14));
                 col = col.push(fcitx5_behavior_card(beh, is_running));
@@ -648,6 +653,12 @@ async fn scan_ime_status() -> ImeStatus {
         (Vec::new(), 0)
     };
 
+    let gtk_module_bug = if active == Some(ImeKind::Fcitx5) {
+        diagnose_gtk_module_bug().await
+    } else {
+        None
+    };
+
     let libreoffice_installed = which_exists("libreoffice").await;
     let (libreoffice_running_wayland, libreoffice_fcitx_module_loaded) =
         detect_running_libreoffice_ime();
@@ -660,7 +671,7 @@ async fn scan_ime_status() -> ImeStatus {
         resume_hook_installed,
         libreoffice_installed, libreoffice_running_wayland,
         libreoffice_fcitx_module_loaded, libreoffice_compat_installed,
-        fcitx5_behavior, fcitx5_missing_frontends,
+        fcitx5_behavior, fcitx5_missing_frontends, gtk_module_bug,
         fcitx5_dup_launchers, fcitx5_instances,
     }
 }
@@ -2372,5 +2383,255 @@ mod launcher_tests {
             assert!(out.stdout.is_empty());
         }
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+const KNOWN_BUGGY_GTK_MODULE_VERSIONS: &[&str] = &["5.1.3-2"];
+const GTK_MODULE_PACKAGES: &[&str] = &[
+    "fcitx5-frontend-gtk3", "fcitx5-frontend-gtk4", "libfcitx5gclient2",
+];
+const NO_SAFE_GTK_VERSION: &str =
+    "저장소에 안전한 버전 없음 — apt-cache policy로 직접 확인하세요";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GtkModuleBugState {
+    Confirmed,
+    SuspectedByVersion,
+    Ok,
+}
+
+#[derive(Debug, Clone)]
+pub struct GtkModuleBugStatus {
+    pub packages: Vec<(String, Option<String>)>,
+    pub state: GtkModuleBugState,
+    pub fix_command: Option<String>,
+}
+
+fn is_buggy_gtk_version(version: Option<&str>) -> bool {
+    version.is_some_and(|v| KNOWN_BUGGY_GTK_MODULE_VERSIONS.contains(&v))
+}
+
+fn detect_glib_mismatch(output: &str) -> bool {
+    output.contains("GLib version too old")
+}
+
+fn gtk_module_bug_state(output: Option<&str>, buggy_version: bool) -> GtkModuleBugState {
+    match output {
+        Some(output) if detect_glib_mismatch(output) => GtkModuleBugState::Confirmed,
+        None if buggy_version => GtkModuleBugState::SuspectedByVersion,
+        _ => GtkModuleBugState::Ok,
+    }
+}
+
+fn parse_apt_candidate(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let line = line.trim();
+        let version = line.strip_prefix("후보:").or_else(|| line.strip_prefix("Candidate:"))?.trim();
+        if version.is_empty() || version.starts_with('(') {
+            None
+        } else {
+            Some(version.to_string())
+        }
+    })
+}
+
+// 후보가 하나라도 없거나 알려진 버그 버전이면 불완전한 설치 명령을 제공하지 않는다.
+fn gtk_fix_guidance(packages: &[(String, String, Option<String>)]) -> String {
+    let mut args = Vec::new();
+    for (package, installed, candidate) in packages {
+        let Some(candidate) = candidate else {
+            return NO_SAFE_GTK_VERSION.into();
+        };
+        if candidate == installed || is_buggy_gtk_version(Some(candidate)) {
+            return NO_SAFE_GTK_VERSION.into();
+        }
+        args.push(format!("{package}={candidate}"));
+    }
+    if args.is_empty() {
+        return NO_SAFE_GTK_VERSION.into();
+    }
+    // 안내 문자열일 뿐이며 실행 경로에 전달하지 않는다.
+    format!("sudo apt-get install --reinstall --allow-downgrades {}", args.join(" "))
+}
+
+async fn installed_gtk_package_version(package: &str) -> Option<String> {
+    let result = runner::run("dpkg-query", &["-W", "-f=${Version}\n", package]).await;
+    if result.success && !result.output.trim().is_empty() {
+        Some(result.output.trim().to_string())
+    } else {
+        None
+    }
+}
+
+async fn diagnose_gtk_module_bug() -> Option<GtkModuleBugStatus> {
+    // 셸 글롭으로 실제 파일만 선택한다. GTK4 모듈은 GTK3 로더로 검사하지 않는다.
+    let modules = runner::run_sh(
+        "for p in /usr/lib/*/gtk-3.0/*/immodules/im-fcitx5.so \
+         /usr/lib/gtk-3.0/*/immodules/im-fcitx5.so; do \
+         if [ -f \"$p\" ]; then printf '%s\\n' \"$p\"; break; fi; done"
+    ).await;
+    let module = modules.output.lines().next().filter(|p| std::path::Path::new(p).is_file())?;
+    let mut packages = Vec::new();
+    for package in GTK_MODULE_PACKAGES {
+        packages.push((package.to_string(), installed_gtk_package_version(package).await));
+    }
+    let default_query = "/usr/lib/x86_64-linux-gnu/libgtk-3-0t64/gtk-query-immodules-3.0";
+    let query = if std::path::Path::new(default_query).is_file() {
+        Some(default_query.to_string())
+    } else {
+        let found = runner::run("which", &["gtk-query-immodules-3.0"]).await;
+        found.success.then(|| found.output.trim().to_string())
+    };
+    let output = if let Some(query) = query {
+        tokio::process::Command::new(query).arg(module).output().await.ok().map(|out| {
+            format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+        })
+    } else {
+        None
+    };
+    let buggy_version = packages.iter().any(|(_, v)| is_buggy_gtk_version(v.as_deref()));
+    let state = gtk_module_bug_state(output.as_deref(), buggy_version);
+    let fix_command = if state != GtkModuleBugState::Ok {
+        let mut candidates = Vec::new();
+        for (package, version) in &packages {
+            let Some(version) = version else { continue };
+            if is_buggy_gtk_version(Some(version)) || state == GtkModuleBugState::Confirmed {
+                let policy = runner::run("apt-cache", &["policy", package]).await;
+                let candidate = if policy.success { parse_apt_candidate(&policy.output) } else { None };
+                candidates.push((package.clone(), version.clone(), candidate));
+            }
+        }
+        Some(gtk_fix_guidance(&candidates))
+    } else {
+        None
+    };
+    Some(GtkModuleBugStatus { packages, state, fix_command })
+}
+
+fn gtk_bug_title(state: GtkModuleBugState) -> &'static str {
+    if state == GtkModuleBugState::Ok {
+        "[OK] fcitx5 GTK 입력기 모듈 정상"
+    } else {
+        "[!] fcitx5 GTK 입력기 모듈에 알려진 버그"
+    }
+}
+
+fn gtk_bug_description(state: GtkModuleBugState) -> &'static str {
+    match state {
+        GtkModuleBugState::Confirmed =>
+            "GTK3 모듈 로드 실패 재현됨: GLib version too old.\n\
+             GTK3 앱(예: Tauri)에서 이 모듈을 통한 한글 입력이 안 됩니다. Electron은 해당 없음.\n\
+             GTK4는 직접 검증하지 않았으며 아래 버전 정보만 제공합니다.",
+        GtkModuleBugState::SuspectedByVersion =>
+            "확인 불가 — 알려진 버그 버전이지만 직접 검증은 못함",
+        GtkModuleBugState::Ok => "",
+    }
+}
+
+pub async fn gtk_module_bug_text() -> String {
+    let Some(status) = diagnose_gtk_module_bug().await else {
+        return "[i] GTK3 fcitx5 모듈 없음 — 진단 생략".into();
+    };
+    let mut lines = vec![gtk_bug_title(status.state).to_string()];
+    for (package, version) in &status.packages {
+        lines.push(format!("{package}: {}", version.as_deref().unwrap_or("미설치")));
+    }
+    if status.state != GtkModuleBugState::Ok {
+        lines.push(gtk_bug_description(status.state).into());
+        lines.push("https://bugs.kali.org/view.php?id=9146".into());
+    }
+    if let Some(command) = status.fix_command {
+        lines.push(command);
+    }
+    lines.join("\n")
+}
+
+fn gtk_module_bug_card(status: Option<&GtkModuleBugStatus>) -> Element<'_, ImeMsg> {
+    let Some(status) = status else {
+        return card(text("[i] GTK3 fcitx5 모듈 없음 — 진단 생략").size(TYPE_BODY).color(C_DIM));
+    };
+    let (color, background) = match status.state {
+        GtkModuleBugState::Ok => (C_OK, Color::from_rgb(0.906, 0.976, 0.949)),
+        GtkModuleBugState::Confirmed => (C_ERR, Color::from_rgb(0.996, 0.925, 0.933)),
+        GtkModuleBugState::SuspectedByVersion => (C_WARN, Color::from_rgb(1.0, 0.973, 0.922)),
+    };
+    let mut body = column![text(gtk_bug_title(status.state)).size(TYPE_BODY).color(color)].spacing(6);
+    if status.state != GtkModuleBugState::Ok {
+        body = body.push(text(gtk_bug_description(status.state)).size(TYPE_CAPTION).color(C_DIM));
+        for (package, version) in &status.packages {
+            body = body.push(text(format!(
+                "{package}: {}", version.as_deref().unwrap_or("미설치")
+            )).size(TYPE_CAPTION).color(C_TEXT));
+        }
+        body = body.push(text("https://bugs.kali.org/view.php?id=9146").size(TYPE_CAPTION).color(C_BLUE));
+        if let Some(command) = &status.fix_command {
+            body = body.push(text("안내만 제공합니다. 아래 텍스트를 선택해 복사할 수 있습니다.")
+                .size(TYPE_CAPTION).color(C_DIM));
+            // 입력 변경은 무시하되 선택 및 키보드 복사는 허용한다. 실행 버튼은 없다.
+            body = body.push(iced::widget::text_input("", command).on_input(|_| ImeMsg::Noop).size(TYPE_CAPTION));
+        }
+    }
+    container(body)
+        .width(Length::Fill)
+        .padding([12, 14])
+        .style(move |_| iced::widget::container::Style {
+            background: Some(iced::Background::Color(background)),
+            border: iced::Border { radius: RADIUS_ROW.into(), color, width: 1.0 },
+            ..Default::default()
+        })
+        .into()
+}
+
+#[cfg(test)]
+mod gtk_module_bug_tests {
+    use super::*;
+
+    #[test]
+    fn version_matching() {
+        assert!(is_buggy_gtk_version(Some("5.1.3-2")));
+        assert!(!is_buggy_gtk_version(Some("5.1.1-1build2")));
+        assert!(!is_buggy_gtk_version(Some("5.1.3-20")));
+        assert!(!is_buggy_gtk_version(None));
+    }
+
+    #[test]
+    fn glib_mismatch_output() {
+        let failure = "GModule initialization check failed: GLib version too old (micro mismatch)";
+        assert!(detect_glib_mismatch(failure));
+        assert!(!detect_glib_mismatch("\"fcitx\" \"Fcitx5\""));
+        assert_eq!(gtk_module_bug_state(Some(failure), false), GtkModuleBugState::Confirmed);
+        assert_eq!(gtk_module_bug_state(Some("loaded"), true), GtkModuleBugState::Ok);
+        assert_eq!(gtk_module_bug_state(None, true), GtkModuleBugState::SuspectedByVersion);
+        assert_eq!(gtk_module_bug_state(None, false), GtkModuleBugState::Ok);
+    }
+
+    #[test]
+    fn candidate_policy_fixture() {
+        let policy = "fcitx5-frontend-gtk3:\n  설치: 5.1.3-2\n  후보: 5.1.1-1build2\n  버전 테이블:\n";
+        assert_eq!(parse_apt_candidate(policy).as_deref(), Some("5.1.1-1build2"));
+        assert_eq!(parse_apt_candidate("  Candidate: 5.1.3-3").as_deref(), Some("5.1.3-3"));
+        assert_eq!(parse_apt_candidate("  후보: (없음)"), None);
+        assert_eq!(parse_apt_candidate("  Candidate: (none)"), None);
+        assert_eq!(parse_apt_candidate(""), None);
+    }
+
+    #[test]
+    fn guidance_includes_multiple_packages() {
+        let packages = vec![
+            ("fcitx5-frontend-gtk3".into(), "5.1.3-2".into(), Some("5.1.1-1build2".into())),
+            ("fcitx5-frontend-gtk4".into(), "5.1.3-2".into(), Some("5.1.1-1build2".into())),
+        ];
+        assert_eq!(gtk_fix_guidance(&packages),
+            "sudo apt-get install --reinstall --allow-downgrades \
+             fcitx5-frontend-gtk3=5.1.1-1build2 fcitx5-frontend-gtk4=5.1.1-1build2");
+    }
+
+    #[test]
+    fn guidance_falls_back_without_safe_candidate() {
+        for candidate in [Some("5.1.3-2".into()), None] {
+            let packages = vec![("fcitx5-frontend-gtk3".into(), "5.1.3-2".into(), candidate)];
+            assert!(gtk_fix_guidance(&packages).contains("안전한 버전 없음"));
+        }
+        assert!(gtk_fix_guidance(&[]).contains("안전한 버전 없음"));
     }
 }
