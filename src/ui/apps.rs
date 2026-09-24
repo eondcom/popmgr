@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 use crate::runner::{self, CmdResult};
 use super::cosmic_tweaks::{is_target_shortcut, parse_shortcut_entries, write_shortcut_updates};
-use super::ime::{action_btn, card, running_bar, C_BLUE, C_BORDER, C_BTN2, C_DIM, C_ERR, C_OK, C_SURFACE, C_SURFACE2, C_TEXT, C_WARN};
+use super::ime::{action_btn, card, running_bar, C_BLUE, C_BORDER, C_BTN2, C_DIM, C_ERR, C_OK, C_SURFACE, C_SURFACE2, C_TEXT, C_WARN, C_ERR_BG, C_PURPLE};
 
 #[derive(Debug, Clone)]
 pub struct Package {
@@ -1167,6 +1167,7 @@ EOF
         col = col.push(Space::with_height(8));
         col = col.push(
             text_input("이름으로 검색...", &self.search)
+                .style(eond_ui_theme::iced_theme::text_input::default)
                 .on_input(AppsMsg::SearchChanged)
                 .padding([8, 10])
                 .size(13)
@@ -1492,10 +1493,10 @@ fn mpv_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'static, App
 }
 
 fn pkg_row(idx: usize, pkg: &Package, disabled: bool) -> Element<'_, AppsMsg> {
-    let bg = if pkg.marked { Color { r: 0.996, g: 0.925, b: 0.933, a: 1.0 } } else { C_SURFACE };
+    let bg = if pkg.marked { C_ERR_BG } else { C_SURFACE };
     let border = if pkg.marked { C_ERR } else { C_BORDER };
     let kind_txt = match pkg.kind { PkgKind::Apt => "APT", PkgKind::Flatpak => "Flatpak" };
-    let kind_col = match pkg.kind { PkgKind::Apt => C_BLUE, PkgKind::Flatpak => Color::from_rgb(0.55, 0.36, 0.96) };
+    let kind_col = match pkg.kind { PkgKind::Apt => C_BLUE, PkgKind::Flatpak => C_PURPLE };
 
     let check_bg = if pkg.marked { C_ERR } else { C_SURFACE2 };
     let check_txt = if pkg.marked { "●" } else { " " };

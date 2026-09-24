@@ -509,7 +509,7 @@ mod tests {
 }
 
 fn ime_row(kind: ImeKind, installed: bool, selected: bool, disabled: bool) -> Element<'static, ImeMsg> {
-    let sel_color = if selected { Color { r: 0.918, g: 0.953, b: 0.996, a: 1.0 } } else { C_SURFACE };
+    let sel_color = if selected { C_SEL_BG } else { C_SURFACE };
     let border_color = if selected { C_BLUE } else { C_BORDER };
 
     let status_txt = if installed { "설치됨" } else { "미설치" };
@@ -1167,8 +1167,8 @@ fn fcitx5_behavior_card(beh: &Fcitx5Behavior, disabled: bool) -> Element<'static
         .padding([12, 14])
         .style(move |_| iced::widget::container::Style {
             background: Some(iced::Background::Color(
-                if ok { Color { r: 0.906, g: 0.976, b: 0.949, a: 1.0 } }
-                else  { Color { r: 1.0, g: 0.973, b: 0.922, a: 1.0 } }
+                if ok { C_OK_BG }
+                else  { C_WARN_BG }
             )),
             border: iced::Border {
                 radius: 8.0.into(),
@@ -1205,7 +1205,7 @@ fn fcitx5_frontend_card(missing: &[&'static str], disabled: bool) -> Element<'st
         .width(Length::Fill)
         .padding([12, 14])
         .style(|_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(Color { r: 1.0, g: 0.973, b: 0.922, a: 1.0 })),
+            background: Some(iced::Background::Color(C_WARN_BG)),
             border: iced::Border { radius: 8.0.into(), color: C_WARN, width: 1.0 },
             ..Default::default()
         })
@@ -1896,7 +1896,7 @@ fn shell_conflict_card<'a>(
         .width(Length::Fill)
         .padding([12, 14])
         .style(|_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(Color { r: 0.996, g: 0.925, b: 0.933, a: 1.0 })),
+            background: Some(iced::Background::Color(C_ERR_BG)),
             border: iced::Border { radius: 8.0.into(), color: C_ERR, width: 1.0 },
             ..Default::default()
         })
@@ -1939,8 +1939,8 @@ fn resume_hook_card(installed: bool, disabled: bool) -> Element<'static, ImeMsg>
         .padding([12, 14])
         .style(move |_| iced::widget::container::Style {
             background: Some(iced::Background::Color(
-                if installed { Color { r: 0.906, g: 0.976, b: 0.949, a: 1.0 } }
-                else         { Color { r: 1.0, g: 0.973, b: 0.922, a: 1.0 } }
+                if installed { C_OK_BG }
+                else         { C_WARN_BG }
             )),
             border: iced::Border {
                 radius: 8.0.into(),
@@ -2000,11 +2000,11 @@ fn libreoffice_ime_card(st: &ImeStatus, disabled: bool) -> Element<'static, ImeM
         .style(move |_| iced::widget::container::Style {
             background: Some(iced::Background::Color(
                 if compat_installed {
-                    Color { r: 0.906, g: 0.976, b: 0.949, a: 1.0 }
+                    C_OK_BG
                 } else if broken_now {
-                    Color { r: 0.996, g: 0.925, b: 0.933, a: 1.0 }
+                    C_ERR_BG
                 } else {
-                    Color { r: 0.918, g: 0.953, b: 0.996, a: 1.0 }
+                    C_SEL_BG
                 }
             )),
             border: iced::Border { radius: 8.0.into(), color: title_col, width: 1.0 },
@@ -2029,7 +2029,7 @@ fn snap_leak_card(leak: &str) -> Element<'static, ImeMsg> {
         .width(Length::Fill)
         .padding([12, 14])
         .style(|_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(Color { r: 1.0, g: 0.973, b: 0.922, a: 1.0 })),
+            background: Some(iced::Background::Color(C_WARN_BG)),
             border: iced::Border { radius: 8.0.into(), color: C_WARN, width: 1.0 },
             ..Default::default()
         })
@@ -2073,7 +2073,7 @@ fn jetbrains_card<'a>(
         .width(Length::Fill)
         .padding([12, 14])
         .style(|_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(Color { r: 0.918, g: 0.953, b: 0.996, a: 1.0 })),
+            background: Some(iced::Background::Color(C_SEL_BG)),
             border: iced::Border { radius: 8.0.into(), color: C_BLUE, width: 1.0 },
             ..Default::default()
         })
@@ -2084,8 +2084,8 @@ fn jetbrains_card<'a>(
 
 // EOND UI App 라이트 · 파랑 팔레트(~/dev/eond-ui-app tokens.json) — 바탕 app_bg → 카드 c1 → 겹침 c2 → 선택 c3.
 // 테마·메인 색을 바꾸려면 여기 THEME_MODE / THEME_ACCENT 만 고친다(main.rs app_theme 도 같은 값을 쓴다).
-use eond_ui_theme::{palette, Accent, Mode, Palette};
-pub const THEME_MODE: Mode = Mode::Light;
+use eond_ui_theme::{palette, Accent, Mode, Palette, Rgba};
+pub const THEME_MODE: Mode = Mode::Dark;
 pub const THEME_ACCENT: Accent = Accent::Blue;
 const P: Palette = palette(THEME_MODE, THEME_ACCENT);
 pub const C_OK:       Color = P.success.to_iced();  // 완료·정상
@@ -2101,11 +2101,24 @@ pub const C_SURFACE2: Color = P.c2.to_iced();       // 인셋/보조 표면
 pub const C_BORDER:   Color = P.c3.to_iced();       // 헤어라인
 pub const C_TEXT:     Color = P.fg.to_iced();       // 본문
 pub const C_BTN2:     Color = P.c3.to_iced();       // 보조 버튼
+// 연한 채움(선택·완료·주의·삭제) — 반투명 토큰을 카드(c1) 위에 미리 합성한 불투명 색.
+// iced 는 투명도를 선형 색공간에서 섞어서, 반투명 그대로 넘기면 웹보다 두 배쯤 진하게 나온다.
+pub const C_SEL_BG:     Color = P.primary_flat.over(P.c1).to_iced();  // 선택된 카드
+pub const C_OK_BG:      Color = P.success_flat.over(P.c1).to_iced();  // 완료·설치됨
+pub const C_WARN_BG:    Color = P.warning_flat.over(P.c1).to_iced();  // 주의 상자
+pub const C_ERR_BG:     Color = P.danger_flat.over(P.c1).to_iced();   // 삭제 표시·오류 상자
+pub const C_WARN_FG:    Color = P.warning_fg.to_iced();    // 주의 글자
+pub const C_WARN_LINE:  Color = Rgba { a: 115, ..P.warning }.over(P.c1).to_iced(); // 주의 상자 테두리(45%)
+pub const C_TEXT2:      Color = P.fg2.to_iced();           // 비활성 메뉴 글자
+pub const C_PURPLE:     Color = P.purple_fg.to_iced();     // Flatpak
+pub const C_HOVER:      Color = Rgba { a: 15, ..P.fg }.over(P.c1).to_iced();  // 호버(6%)
+pub const C_HOVER_WEAK: Color = Rgba { a: 8, ..P.fg }.over(P.c1).to_iced();
+pub const C_ON_LIGHT:   Color = palette(Mode::Light, THEME_ACCENT).fg.to_iced(); // 밝은 바탕 위 글자(모드 무관)
 
 pub fn action_btn<'a, M: Clone + 'a>(label: impl Into<String>, msg: M, enabled: bool, color: Color) -> Element<'a, M> {
     let bg = if enabled { color } else { C_BTN2 };
     // 배경 휘도에 따라 글자색 자동 선택(라이트 보조버튼=어두운 글자, 컬러 버튼=흰 글자).
-    let on = |c: Color| if luminance(c) > 0.62 { C_TEXT } else { Color::WHITE };
+    let on = |c: Color| if luminance(c) > 0.62 { C_ON_LIGHT } else { Color::WHITE };
     let tc = if enabled { on(bg) } else { C_DIM };
     let b = button(text(label.into()).size(13).color(tc))
         .padding([11, 22])
@@ -2126,13 +2139,13 @@ pub fn action_btn<'a, M: Clone + 'a>(label: impl Into<String>, msg: M, enabled: 
 
 pub fn running_bar<'a, M: 'a>(label: &'a str) -> Element<'a, M> {
     container(
-        text(label).size(12).color(Color { r: 0.70, g: 0.42, b: 0.0, a: 1.0 })
+        text(label).size(12).color(C_WARN_FG)
     )
     .padding([11, 16])
     .width(Length::Fill)
     .style(|_| iced::widget::container::Style {
-        background: Some(iced::Background::Color(Color { r: 1.0, g: 0.965, b: 0.898, a: 1.0 })), // #FFF6E5
-        border: iced::Border { radius: 12.0.into(), color: Color { r: 1.0, g: 0.886, b: 0.667, a: 1.0 }, width: 1.0 },
+        background: Some(iced::Background::Color(C_WARN_BG)),
+        border: iced::Border { radius: 12.0.into(), color: C_WARN_LINE, width: 1.0 },
         ..Default::default()
     })
     .into()

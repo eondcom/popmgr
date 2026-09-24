@@ -18,7 +18,7 @@ use ui::{
     printer::{PrinterMsg, PrinterState},
     usb::{UsbMsg, UsbState},
 };
-use ui::ime::{C_BG, C_BLUE, C_BORDER, C_DIM, C_SURFACE, C_TEXT};
+use ui::ime::{C_BG, C_BLUE, C_BORDER, C_DIM, C_SURFACE, C_TEXT, C_TEXT2, C_HOVER, C_HOVER_WEAK};
 
 /// 두 색을 비율 t(0~1)로 섞기.
 fn mix(a: Color, b: Color, t: f32) -> Color {
@@ -430,7 +430,7 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
         // 활성: 연한 블루 배경 + 블루 텍스트(토스 사이드 내비 방식)
         let active_bg = mix(C_SURFACE, C_BLUE, 0.10);
         let bg = if active { active_bg } else { C_SURFACE };
-        let tc = if active { C_BLUE } else { Color::from_rgb(0.30, 0.34, 0.40) };
+        let tc = if active { C_BLUE } else { C_TEXT2 };
         let hc = if active { mix(C_BLUE, C_TEXT, 0.35) } else { C_DIM };
 
         let btn = button(
@@ -493,8 +493,8 @@ fn log_panel_view(output: &str) -> Element<'_, Message> {
         .padding([4, 12])
         .style(|_, status| {
             let bg = match status {
-                iced::widget::button::Status::Hovered => Color::from_rgba(1.0, 1.0, 1.0, 0.06),
-                _ => Color::from_rgba(1.0, 1.0, 1.0, 0.03),
+                iced::widget::button::Status::Hovered => C_HOVER,
+                _ => C_HOVER_WEAK,
             };
             iced::widget::button::Style {
                 background: Some(iced::Background::Color(bg)),

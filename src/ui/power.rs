@@ -201,6 +201,7 @@ impl PowerState {
             schedule_body = schedule_body.push(
                 row![
                     text_input("분", &self.minutes_input)
+                .style(eond_ui_theme::iced_theme::text_input::default)
                         .on_input(PowerMsg::MinutesChanged)
                         .padding([8, 10])
                         .size(13)

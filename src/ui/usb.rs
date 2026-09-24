@@ -3,7 +3,7 @@ use iced::{
     Color, Element, Length, Task,
 };
 use crate::runner::{self, CmdResult};
-use super::ime::{action_btn, card, running_bar, C_BLUE, C_BORDER, C_BTN2, C_DIM, C_ERR, C_OK, C_SURFACE, C_TEXT, C_WARN};
+use super::ime::{action_btn, card, running_bar, C_BLUE, C_BORDER, C_BTN2, C_DIM, C_ERR, C_OK, C_SURFACE, C_TEXT, C_WARN, C_OK_BG, C_ERR_BG};
 
 /// popmgr 전용 root 헬퍼. NOPASSWD sudoers 로만 호출되며 검증된 동작만 수행한다.
 /// /usr/local/bin/popmgr-helper 에 root 소유로 설치된다(사용자는 수정 불가).
@@ -633,7 +633,7 @@ fn bt_card(bt: &BtStatus, ktb_running: bool, is_running: bool) -> Element<'_, Us
 }
 
 fn device_row(d: &UsbDevice, disabled: bool) -> Element<'_, UsbMsg> {
-    let bg = if d.highlight { Color { r: 0.906, g: 0.976, b: 0.949, a: 1.0 } } else { C_SURFACE };
+    let bg = if d.highlight { C_OK_BG } else { C_SURFACE };
     let border = if d.highlight { C_OK } else { C_BORDER };
     let name_col = if d.highlight { C_OK } else { C_TEXT };
 
@@ -679,7 +679,7 @@ fn failed_port_row(fp: &UsbFailedPort) -> Element<'_, UsbMsg> {
     .padding([12, 14])
     .width(Length::Fill)
     .style(|_| iced::widget::container::Style {
-        background: Some(iced::Background::Color(Color { r: 0.996, g: 0.925, b: 0.933, a: 1.0 })),
+        background: Some(iced::Background::Color(C_ERR_BG)),
         border: iced::Border { radius: 12.0.into(), color: C_ERR, width: 1.0 },
         ..Default::default()
     })
