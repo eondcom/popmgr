@@ -1,3 +1,4 @@
+use super::ime::{TYPE_SCREEN_TITLE, TYPE_BODY, TYPE_CAPTION, TYPE_CHIP, FONT_BOLD, FONT_SEMIBOLD};
 use iced::{
     widget::{column, container, row, scrollable, slider, text, Space},
     Element, Length, Task,
@@ -168,10 +169,10 @@ impl DisplayState {
 
     pub fn view(&self) -> Element<'_, DisplayMsg> {
         let mut col = column![
-            text("디스플레이").size(20),
+            text("디스플레이").size(TYPE_SCREEN_TITLE).font(FONT_BOLD),
             Space::with_height(6),
             text("내장·외부 모니터의 밝기를 조절합니다. 외부 모니터는 DDC/CI(모니터 OSD를 소프트웨어로 제어)로 동작하며, COSMIC 상단바에는 나타나지 않습니다.")
-                .size(11)
+                .size(TYPE_CAPTION)
                 .color(C_DIM),
             Space::with_height(16),
         ];
@@ -181,7 +182,7 @@ impl DisplayState {
         }
 
         if !self.scanned {
-            col = col.push(text("스캔 중...").size(13).color(C_DIM));
+            col = col.push(text("스캔 중...").size(TYPE_BODY).color(C_DIM));
             return scrollable(container(col).padding([4, 0])).into();
         }
 
@@ -189,9 +190,9 @@ impl DisplayState {
         col = col.push(
             card(
                 column![
-                    text("전원 모드").size(14),
+                    text("전원 모드").size(TYPE_BODY).font(FONT_SEMIBOLD),
                     Space::with_height(4),
-                    text(format!("버튼 하나로 모든 모니터 밝기를 전환합니다 (저전력 {LOW_POWER_PCT}% / 기본 {DEFAULT_PCT}%).")).size(11).color(C_DIM),
+                    text(format!("버튼 하나로 모든 모니터 밝기를 전환합니다 (저전력 {LOW_POWER_PCT}% / 기본 {DEFAULT_PCT}%).")).size(TYPE_CAPTION).color(C_DIM),
                     Space::with_height(10),
                     row![
                         action_btn("저전력 모드", DisplayMsg::ApplyBrightnessPreset(LOW_POWER_PCT), idle_presets, C_BTN2),
@@ -225,7 +226,7 @@ impl DisplayState {
         col = col.push(Space::with_height(8));
         let idle = self.running.is_none();
         let actions = row![
-            text("모니터가 안 보이면 '재인식'을 누르세요 (i2c 모듈 재로드)").size(10).color(C_DIM),
+            text("모니터가 안 보이면 '재인식'을 누르세요 (i2c 모듈 재로드)").size(TYPE_CHIP).color(C_DIM),
             Space::with_width(Length::Fill),
             action_btn("재인식", DisplayMsg::Reprobe, idle, C_BTN2),
             Space::with_width(8),
@@ -245,9 +246,9 @@ fn monitor_card(i: usize, mon: &Monitor, busy: bool) -> Element<'_, DisplayMsg> 
     };
     let mut body = column![
         row![
-            text(&mon.name).size(14),
+            text(&mon.name).size(TYPE_BODY).font(FONT_SEMIBOLD),
             Space::with_width(8),
-            text(format!("[{tag}] {}", mon.connector)).size(11).color(C_BLUE),
+            text(format!("[{tag}] {}", mon.connector)).size(TYPE_CAPTION).color(C_BLUE),
         ].align_y(iced::Alignment::Center),
         Space::with_height(10),
     ];
@@ -257,17 +258,17 @@ fn monitor_card(i: usize, mon: &Monitor, busy: bool) -> Element<'_, DisplayMsg> 
         let pct = mon.pct;
         body = body.push(
             row![
-                container(text("밝기").size(12).color(C_DIM)).width(48),
+                container(text("밝기").size(TYPE_CAPTION).color(C_DIM)).width(48),
                 slider(0..=100, pct, move |v| DisplayMsg::SetBrightness(i, v))
                     .on_release(DisplayMsg::CommitBrightness(i))
                     .width(Length::Fill),
                 Space::with_width(8),
-                container(text(format!("{pct}%")).size(12).color(C_TEXT)).width(40),
+                container(text(format!("{pct}%")).size(TYPE_CAPTION).color(C_TEXT)).width(40),
             ]
             .align_y(iced::Alignment::Center)
         );
     } else {
-        body = body.push(text("밝기 제어는 사용할 수 없지만 터치 매핑 대상으로 사용할 수 있습니다.").size(11).color(C_DIM));
+        body = body.push(text("밝기 제어는 사용할 수 없지만 터치 매핑 대상으로 사용할 수 있습니다.").size(TYPE_CAPTION).color(C_DIM));
     }
 
     // 명암 슬라이더 (외부 모니터 + 지원 시)
@@ -275,12 +276,12 @@ fn monitor_card(i: usize, mon: &Monitor, busy: bool) -> Element<'_, DisplayMsg> 
         body = body.push(Space::with_height(8));
         body = body.push(
             row![
-                container(text("명암").size(12).color(C_DIM)).width(48),
+                container(text("명암").size(TYPE_CAPTION).color(C_DIM)).width(48),
                 slider(0..=100, c, move |v| DisplayMsg::SetContrast(i, v))
                     .on_release(DisplayMsg::CommitContrast(i))
                     .width(Length::Fill),
                 Space::with_width(8),
-                container(text(format!("{c}%")).size(12).color(C_TEXT)).width(40),
+                container(text(format!("{c}%")).size(TYPE_CAPTION).color(C_TEXT)).width(40),
             ]
             .align_y(iced::Alignment::Center)
         );
@@ -288,7 +289,7 @@ fn monitor_card(i: usize, mon: &Monitor, busy: bool) -> Element<'_, DisplayMsg> 
 
     if busy {
         body = body.push(Space::with_height(6));
-        body = body.push(text("적용 중...").size(10).color(C_DIM));
+        body = body.push(text("적용 중...").size(TYPE_CHIP).color(C_DIM));
     }
 
     card(body)
@@ -306,9 +307,9 @@ fn setup_card(reason: &SetupReason, busy: bool) -> Element<'_, DisplayMsg> {
         ),
     };
     let mut body = column![
-        text("외부 모니터 제어 권한").size(14).color(C_WARN),
+        text("외부 모니터 제어 권한").size(TYPE_BODY).font(FONT_SEMIBOLD).color(C_WARN),
         Space::with_height(8),
-        text(msg).size(11).color(C_DIM),
+        text(msg).size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(12),
     ];
     body = body.push(
@@ -335,26 +336,26 @@ fn touch_map_card<'a>(
         .collect();
 
     let mut body = column![
-        text("외부 터치스크린 매핑").size(14),
+        text("외부 터치스크린 매핑").size(TYPE_BODY).font(FONT_SEMIBOLD),
         Space::with_height(8),
     ];
 
     if external_touches.is_empty() {
-        body = body.push(text("외부 USB 터치 장치가 보이지 않습니다. 터치 USB 케이블 연결을 확인하세요.").size(11).color(C_DIM));
+        body = body.push(text("외부 USB 터치 장치가 보이지 않습니다. 터치 USB 케이블 연결을 확인하세요.").size(TYPE_CAPTION).color(C_DIM));
     } else if external_monitors.is_empty() {
-        body = body.push(text("외부 모니터 출력이 보이지 않습니다. 모니터 연결 또는 디스플레이 인식을 확인하세요.").size(11).color(C_DIM));
+        body = body.push(text("외부 모니터 출력이 보이지 않습니다. 모니터 연결 또는 디스플레이 인식을 확인하세요.").size(TYPE_CAPTION).color(C_DIM));
     } else {
         let session_label = if session_type.is_empty() { "unknown" } else { session_type };
         body = body.push(
             text(format!(
                 "세션: {session_label}. X11에서는 즉시 적용됩니다. COSMIC Wayland에서는 현재 컴포지터가 터치-출력 매핑 CLI를 제공하지 않아, Xwayland 기본 출력만 확실히 맞추고 나머지는 보정 행렬(calibration matrix) 기반 추정 적용이라 모니터별로 안 될 수 있습니다."
             ))
-            .size(11)
+            .size(TYPE_CAPTION)
             .color(C_DIM)
         );
         if !xinput_available {
             body = body.push(Space::with_height(4));
-            body = body.push(text("xinput 패키지가 없으면 X11 직접 매핑은 사용할 수 없습니다.").size(10).color(C_WARN));
+            body = body.push(text("xinput 패키지가 없으면 X11 직접 매핑은 사용할 수 없습니다.").size(TYPE_CHIP).color(C_WARN));
         }
         body = body.push(Space::with_height(10));
 
@@ -363,8 +364,8 @@ fn touch_map_card<'a>(
             body = body.push(
                 row![
                     column![
-                        text(&touch.name).size(12).color(C_TEXT),
-                        text(format!("{event} · {}", touch.phys)).size(10).color(C_DIM),
+                        text(&touch.name).size(TYPE_CAPTION).color(C_TEXT),
+                        text(format!("{event} · {}", touch.phys)).size(TYPE_CHIP).color(C_DIM),
                     ].width(Length::Fill),
                 ]
                 .align_y(iced::Alignment::Center)

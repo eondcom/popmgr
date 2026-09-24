@@ -1,3 +1,4 @@
+use super::ime::{TYPE_SCREEN_TITLE, TYPE_BODY, TYPE_CAPTION, TYPE_CHIP, FONT_BOLD, FONT_SEMIBOLD, RADIUS_ROW, RADIUS_CARD};
 use iced::{
     widget::{button, column, container, row, scrollable, slider, text, Space},
     Color, Element, Length, Task,
@@ -352,7 +353,7 @@ impl UsbState {
     pub fn view(&self) -> Element<'_, UsbMsg> {
         let is_running = self.running.is_some();
         let mut col = column![
-            text("USB 장치").size(20),
+            text("USB 장치").size(TYPE_SCREEN_TITLE).font(FONT_BOLD),
             Space::with_height(16),
         ];
 
@@ -395,10 +396,10 @@ impl UsbState {
             };
             col = col.push(card(
                 column![
-                    text("ktrackball 데몬").size(13).color(C_TEXT),
+                    text("ktrackball 데몬").size(TYPE_BODY).color(C_TEXT),
                     Space::with_height(6),
                     row![
-                        text(ktb_txt).size(12).color(ktb_col),
+                        text(ktb_txt).size(TYPE_CAPTION).color(ktb_col),
                         Space::with_width(Length::Fill),
                         action_btn("재시작", UsbMsg::RestartKtrackball, !is_running, C_WARN),
                     ].align_y(iced::Alignment::Center),
@@ -413,23 +414,23 @@ impl UsbState {
             col = col.push(card(
                 column![
                     row![
-                        text("포인터 속도").size(13).color(C_TEXT),
+                        text("포인터 속도").size(TYPE_BODY).color(C_TEXT),
                         Space::with_width(Length::Fill),
-                        text(format!("{:.2}", cur_pct as f64 / 100.0)).size(12).color(C_TEXT),
+                        text(format!("{:.2}", cur_pct as f64 / 100.0)).size(TYPE_CAPTION).color(C_TEXT),
                     ].align_y(iced::Alignment::Center),
                     Space::with_height(8),
                     row![
-                        text("느림").size(11).color(C_DIM),
+                        text("느림").size(TYPE_CAPTION).color(C_DIM),
                         Space::with_width(8),
                         slider(-100..=100, cur_pct, UsbMsg::SetPointerSpeed)
                             .on_release(UsbMsg::CommitPointerSpeed)
                             .width(Length::Fill),
                         Space::with_width(8),
-                        text("빠름").size(11).color(C_DIM),
+                        text("빠름").size(TYPE_CAPTION).color(C_DIM),
                     ].align_y(iced::Alignment::Center),
                     Space::with_height(6),
                     text("COSMIC 포인터 가속 설정(트랙볼·마우스 공통). 놓는 즉시 적용됩니다.")
-                        .size(11).color(C_DIM),
+                        .size(TYPE_CAPTION).color(C_DIM),
                 ]
             ));
 
@@ -441,23 +442,23 @@ impl UsbState {
                 col = col.push(card(
                     column![
                         row![
-                            text("트랙볼 가속 배율").size(13).color(C_TEXT),
+                            text("트랙볼 가속 배율").size(TYPE_BODY).color(C_TEXT),
                             Space::with_width(Length::Fill),
-                            text(format!("{:.2}x", tb_v as f64 / 100.0)).size(12).color(C_TEXT),
+                            text(format!("{:.2}x", tb_v as f64 / 100.0)).size(TYPE_CAPTION).color(C_TEXT),
                         ].align_y(iced::Alignment::Center),
                         Space::with_height(8),
                         row![
-                            text("1.0x").size(11).color(C_DIM),
+                            text("1.0x").size(TYPE_CAPTION).color(C_DIM),
                             Space::with_width(8),
                             slider(100..=300, tb_v, UsbMsg::SetTbSpeed)
                                 .on_release(UsbMsg::CommitTbSpeed)
                                 .width(Length::Fill),
                             Space::with_width(8),
-                            text("3.0x").size(11).color(C_DIM),
+                            text("3.0x").size(TYPE_CAPTION).color(C_DIM),
                         ].align_y(iced::Alignment::Center),
                         Space::with_height(6),
                         text("ktrackball 데몬에서 모션에 배율 적용(libinput 최대보다 빠름). 놓으면 데몬 재시작·즉시 반영.")
-                            .size(11).color(C_DIM),
+                            .size(TYPE_CAPTION).color(C_DIM),
                     ]
                 ));
                 col = col.push(Space::with_height(10));
@@ -467,40 +468,40 @@ impl UsbState {
                 col = col.push(card(
                     column![
                         row![
-                            text("커서 크기").size(13).color(C_TEXT),
+                            text("커서 크기").size(TYPE_BODY).color(C_TEXT),
                             Space::with_width(Length::Fill),
-                            text(format!("{cs_v}px")).size(12).color(C_TEXT),
+                            text(format!("{cs_v}px")).size(TYPE_CAPTION).color(C_TEXT),
                         ].align_y(iced::Alignment::Center),
                         Space::with_height(8),
                         row![
-                            text("작게").size(11).color(C_DIM),
+                            text("작게").size(TYPE_CAPTION).color(C_DIM),
                             Space::with_width(8),
                             slider(16..=96, cs_v, UsbMsg::SetCursorSize)
                                 .on_release(UsbMsg::CommitCursorSize)
                                 .width(Length::Fill),
                             Space::with_width(8),
-                            text("크게").size(11).color(C_DIM),
+                            text("크게").size(TYPE_CAPTION).color(C_DIM),
                         ].align_y(iced::Alignment::Center),
                         Space::with_height(6),
                         text("XCURSOR_SIZE + gsettings 기록. GTK 앱은 즉시, COSMIC 컴포지터 커서는 재로그인 후 반영.")
-                            .size(11).color(C_DIM),
+                            .size(TYPE_CAPTION).color(C_DIM),
                     ]
                 ));
             } else {
                 // 헬퍼 미설치 → 1회 설치 안내
                 col = col.push(card(
                     column![
-                        text("트랙볼 배율 · 커서 크기").size(13).color(C_TEXT),
+                        text("트랙볼 배율 · 커서 크기").size(TYPE_BODY).color(C_TEXT),
                         Space::with_height(6),
                         text("이 두 설정은 root 권한이 필요합니다. 전용 헬퍼를 1회 설치하면\n이후 암호 없이(NOPASSWD) 슬라이더로 바로 조절할 수 있습니다.")
-                            .size(11).color(C_DIM),
+                            .size(TYPE_CAPTION).color(C_DIM),
                         Space::with_height(10),
                         action_btn("권한 헬퍼 설치 (1회)", UsbMsg::InstallHelper, !is_running, C_BLUE),
                     ]
                 ));
             }
         } else {
-            col = col.push(text("스캔 중...").size(13).color(C_DIM));
+            col = col.push(text("스캔 중...").size(TYPE_BODY).color(C_DIM));
         }
 
         col = col.push(Space::with_height(16));
@@ -527,7 +528,7 @@ impl UsbState {
 fn bt_card(bt: &BtStatus, ktb_running: bool, is_running: bool) -> Element<'_, UsbMsg> {
     let mut inner = column![
         row![
-            text("블루투스 트랙볼").size(13).color(C_TEXT),
+            text("블루투스 트랙볼").size(TYPE_BODY).color(C_TEXT),
             Space::with_width(Length::Fill),
             action_btn("트랙볼 페어링", UsbMsg::BtPair, !is_running, C_BLUE),
         ].align_y(iced::Alignment::Center),
@@ -541,13 +542,13 @@ fn bt_card(bt: &BtStatus, ktb_running: bool, is_running: bool) -> Element<'_, Us
     } else {
         ("○ 블루투스 꺼짐".to_string(), C_ERR)
     };
-    inner = inner.push(text(ad_txt).size(12).color(ad_col));
+    inner = inner.push(text(ad_txt).size(TYPE_CAPTION).color(ad_col));
 
     if bt.devices.is_empty() {
         inner = inner.push(Space::with_height(6));
         inner = inner.push(
             text("등록된 트랙볼이 없습니다. 기기를 페어링 모드로 만든 뒤 [트랙볼 페어링]을 누르세요.")
-                .size(11).color(C_DIM)
+                .size(TYPE_CAPTION).color(C_DIM)
         );
     } else {
         for d in &bt.devices {
@@ -574,21 +575,21 @@ fn bt_card(bt: &BtStatus, ktb_running: bool, is_running: bool) -> Element<'_, Us
             inner = inner.push(
                 container(column![
                     row![
-                        text(d.name.clone()).size(12).color(C_TEXT),
+                        text(d.name.clone()).size(TYPE_CAPTION).color(C_TEXT),
                         Space::with_width(Length::Fill),
                         actions,
                     ].align_y(iced::Alignment::Center),
                     Space::with_height(2),
                     row![
-                        text(st_txt).size(11).color(st_col),
+                        text(st_txt).size(TYPE_CAPTION).color(st_col),
                         Space::with_width(8),
-                        text(d.mac.clone()).size(10).color(C_DIM),
+                        text(d.mac.clone()).size(TYPE_CHIP).color(C_DIM),
                     ].align_y(iced::Alignment::Center),
                 ])
                 .padding(8)
                 .style(|_: &iced::Theme| container::Style {
                     background: Some(C_SURFACE.into()),
-                    border: iced::Border { color: C_BORDER, width: 1.0, radius: 4.0.into() },
+                    border: iced::Border { color: C_BORDER, width: 1.0, radius: RADIUS_ROW.into() },
                     ..Default::default()
                 })
             );
@@ -604,10 +605,10 @@ fn bt_card(bt: &BtStatus, ktb_running: bool, is_running: bool) -> Element<'_, Us
         inner = inner.push(
             container(column![
                 text("⚠ ktrackball 데몬이 실행되고 있지 않습니다")
-                    .size(12).color(C_WARN),
+                    .size(TYPE_CAPTION).color(C_WARN),
                 Space::with_height(4),
                 text("블루투스로 연결하면 장치 이름이 `ExpertBT5.0` 으로 바뀌어 device_match 에 걸리지 않습니다. 데몬이 장치를 못 찾고 종료되어 포인터 배율·버튼 매핑이 적용되지 않습니다(포인터가 느리게 느껴집니다).")
-                    .size(11).color(C_DIM),
+                    .size(TYPE_CAPTION).color(C_DIM),
                 Space::with_height(6),
                 row![
                     Space::with_width(Length::Fill),
@@ -617,7 +618,7 @@ fn bt_card(bt: &BtStatus, ktb_running: bool, is_running: bool) -> Element<'_, Us
             .padding(8)
             .style(|_: &iced::Theme| container::Style {
                 background: Some(C_SURFACE.into()),
-                border: iced::Border { color: C_WARN, width: 1.0, radius: 4.0.into() },
+                border: iced::Border { color: C_WARN, width: 1.0, radius: RADIUS_ROW.into() },
                 ..Default::default()
             })
         );
@@ -626,7 +627,7 @@ fn bt_card(bt: &BtStatus, ktb_running: bool, is_running: bool) -> Element<'_, Us
     inner = inner.push(Space::with_height(8));
     inner = inner.push(
         text("페어링 모드: Kensington Expert 는 상단 버튼 4개를 동시에 3초간 누릅니다(바닥에 별도 페어링 버튼 없음). 동글(2.4GHz) <-> 블루투스 전환은 기기 버튼으로만 가능하며 소프트웨어로는 바꿀 수 없습니다.")
-            .size(11).color(C_DIM)
+            .size(TYPE_CAPTION).color(C_DIM)
     );
 
     card(inner)
@@ -647,8 +648,8 @@ fn device_row(d: &UsbDevice, disabled: bool) -> Element<'_, UsbMsg> {
             text(d.icon).size(18),
             Space::with_width(12),
             column![
-                text(name).size(13).color(name_col),
-                text(sub).size(11).color(C_DIM),
+                text(name).size(TYPE_BODY).color(name_col),
+                text(sub).size(TYPE_CAPTION).color(C_DIM),
             ].width(Length::Fill),
             action_btn("재인식", UsbMsg::RetrieveDev(sysfs_name), !disabled, C_BTN2),
         ]
@@ -658,7 +659,7 @@ fn device_row(d: &UsbDevice, disabled: bool) -> Element<'_, UsbMsg> {
     .width(Length::Fill)
     .style(move |_| iced::widget::container::Style {
         background: Some(iced::Background::Color(bg)),
-        border: iced::Border { radius: 12.0.into(), color: border, width: 1.0 },
+        border: iced::Border { radius: RADIUS_CARD.into(), color: border, width: 1.0 },
         ..Default::default()
     })
     .into()
@@ -667,11 +668,11 @@ fn device_row(d: &UsbDevice, disabled: bool) -> Element<'_, UsbMsg> {
 fn failed_port_row(fp: &UsbFailedPort) -> Element<'_, UsbMsg> {
     container(
         row![
-            text("[!]").size(13).color(C_ERR),
+            text("[!]").size(TYPE_BODY).color(C_ERR),
             Space::with_width(10),
             column![
-                text(format!("포트 {} — 열거 실패", fp.port)).size(13).color(C_ERR),
-                text("케이블/포트 점검 또는 xHCI 리셋 필요").size(11).color(C_DIM),
+                text(format!("포트 {} — 열거 실패", fp.port)).size(TYPE_BODY).color(C_ERR),
+                text("케이블/포트 점검 또는 xHCI 리셋 필요").size(TYPE_CAPTION).color(C_DIM),
             ],
         ]
         .align_y(iced::Alignment::Center)
@@ -680,7 +681,7 @@ fn failed_port_row(fp: &UsbFailedPort) -> Element<'_, UsbMsg> {
     .width(Length::Fill)
     .style(|_| iced::widget::container::Style {
         background: Some(iced::Background::Color(C_ERR_BG)),
-        border: iced::Border { radius: 12.0.into(), color: C_ERR, width: 1.0 },
+        border: iced::Border { radius: RADIUS_CARD.into(), color: C_ERR, width: 1.0 },
         ..Default::default()
     })
     .into()
@@ -689,9 +690,9 @@ fn failed_port_row(fp: &UsbFailedPort) -> Element<'_, UsbMsg> {
 fn xhci_confirm_card<'a>() -> Element<'a, UsbMsg> {
     card(
         column![
-            text("xHCI 컨트롤러 리셋").size(14).color(C_ERR),
+            text("xHCI 컨트롤러 리셋").size(TYPE_BODY).font(FONT_SEMIBOLD).color(C_ERR),
             Space::with_height(8),
-            text("모든 USB 장치가 잠시 연결 해제됩니다.\n계속하시겠습니까?").size(13),
+            text("모든 USB 장치가 잠시 연결 해제됩니다.\n계속하시겠습니까?").size(TYPE_BODY),
             Space::with_height(16),
             row![
                 action_btn("취소", UsbMsg::CancelXhci, true, C_BTN2),

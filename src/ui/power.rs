@@ -1,3 +1,4 @@
+use super::ime::{TYPE_SCREEN_TITLE, TYPE_BODY, TYPE_CAPTION, FONT_BOLD, FONT_SEMIBOLD};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -188,10 +189,10 @@ impl PowerState {
 
     pub fn view(&self) -> Element<'_, PowerMsg> {
         let mut col = column![
-            text("전원").size(20),
+            text("전원").size(TYPE_SCREEN_TITLE).font(FONT_BOLD),
             Space::with_height(6),
             text("절전모드 진입, 절전 방지, 예약 절전을 제어합니다.")
-                .size(11)
+                .size(TYPE_CAPTION)
                 .color(C_DIM),
             Space::with_height(16),
         ];
@@ -204,9 +205,9 @@ impl PowerState {
 
         col = col.push(card(
             column![
-                text("지금 절전모드").size(14),
+                text("지금 절전모드").size(TYPE_BODY).font(FONT_SEMIBOLD),
                 Space::with_height(4),
-                text("화면과 시스템을 즉시 대기 상태(suspend)로 전환합니다.").size(11).color(C_DIM),
+                text("화면과 시스템을 즉시 대기 상태(suspend)로 전환합니다.").size(TYPE_CAPTION).color(C_DIM),
                 Space::with_height(10),
                 row![
                     Space::with_width(Length::Fill),
@@ -220,12 +221,12 @@ impl PowerState {
         let inhibit_color = if self.inhibit_active { C_OK } else { C_BTN2 };
         col = col.push(card(
             column![
-                text("절전 방지").size(14),
+                text("절전 방지").size(TYPE_BODY).font(FONT_SEMIBOLD),
                 Space::with_height(4),
                 text(format!(
                     "켜면 화면 잠금/절전이 자동으로 일어나지 않습니다 (최대 {}시간, 앱 종료 시에도 해제하는 걸 권장).",
                     MAX_INHIBIT_SECS / 3600
-                )).size(11).color(C_DIM),
+                )).size(TYPE_CAPTION).color(C_DIM),
                 Space::with_height(10),
                 row![
                     Space::with_width(Length::Fill),
@@ -236,7 +237,7 @@ impl PowerState {
         col = col.push(Space::with_height(10));
 
         let mut schedule_body = column![
-            text("예약 절전모드").size(14),
+            text("예약 절전모드").size(TYPE_BODY).font(FONT_SEMIBOLD),
             Space::with_height(4),
         ];
         if let Some(deadline) = self.schedule_deadline {
@@ -244,7 +245,7 @@ impl PowerState {
             let (m, s) = (remaining / 60, remaining % 60);
             schedule_body = schedule_body.push(
                 text(format!("{}분 후 절전 예약됨 — 남은 시간 {m:02}:{s:02}", self.schedule_minutes))
-                    .size(12).color(C_TEXT)
+                    .size(TYPE_CAPTION).color(C_TEXT)
             );
             schedule_body = schedule_body.push(Space::with_height(10));
             schedule_body = schedule_body.push(
@@ -255,7 +256,7 @@ impl PowerState {
             );
         } else {
             schedule_body = schedule_body.push(
-                text("지정한 시간 뒤 자동으로 절전모드에 진입합니다.").size(11).color(C_DIM)
+                text("지정한 시간 뒤 자동으로 절전모드에 진입합니다.").size(TYPE_CAPTION).color(C_DIM)
             );
             schedule_body = schedule_body.push(Space::with_height(10));
             schedule_body = schedule_body.push(
@@ -264,10 +265,10 @@ impl PowerState {
                 .style(eond_ui_theme::iced_theme::text_input::default)
                         .on_input(PowerMsg::MinutesChanged)
                         .padding([8, 10])
-                        .size(13)
+                        .size(TYPE_BODY)
                         .width(80),
                     Space::with_width(8),
-                    text("분 후").size(12).color(C_DIM),
+                    text("분 후").size(TYPE_CAPTION).color(C_DIM),
                     Space::with_width(Length::Fill),
                     action_btn("예약", PowerMsg::Schedule, idle, C_BLUE),
                 ]
@@ -301,10 +302,10 @@ impl PowerState {
                 .style(eond_ui_theme::iced_theme::text_input::default)
                 .on_input(PowerMsg::ThresholdChanged)
                 .padding([8, 10])
-                .size(13)
+                .size(TYPE_BODY)
                 .width(60),
             Space::with_width(8),
-            text("% 이하").size(12).color(C_DIM),
+            text("% 이하").size(TYPE_CAPTION).color(C_DIM),
             Space::with_width(Length::Fill),
             action_btn("지금 점검", PowerMsg::GuardCheck, idle, C_BTN2),
             Space::with_width(8),
@@ -320,16 +321,16 @@ impl PowerState {
         }
 
         card(column![
-            text("배터리 부족 시 자동 절전").size(14),
+            text("배터리 부족 시 자동 절전").size(TYPE_BODY).font(FONT_SEMIBOLD),
             Space::with_height(4),
             text(
                 "배터리로 쓰는 중 잔량이 지정한 % 이하가 되면 강제 종료 전에 절전합니다. \
                  복귀 후 3분은 다시 잠들지 않습니다.\n\
                  (이 PC 는 최대절전이 불가해 기본 UPower 가 2%에서 전원을 끕니다 — 작업 데이터 유실)"
-            ).size(11).color(C_DIM),
+            ).size(TYPE_CAPTION).color(C_DIM),
             Space::with_height(8),
-            text(status_txt).size(12).color(status_col),
-            text(battery).size(11).color(C_DIM),
+            text(status_txt).size(TYPE_CAPTION).color(status_col),
+            text(battery).size(TYPE_CAPTION).color(C_DIM),
             Space::with_height(10),
             buttons,
         ])

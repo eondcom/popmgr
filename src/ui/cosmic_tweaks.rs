@@ -1,3 +1,4 @@
+use super::ime::{TYPE_SCREEN_TITLE, TYPE_BODY, TYPE_CAPTION, FONT_BOLD, FONT_SEMIBOLD};
 use iced::{
     widget::{column, container, row, scrollable, text, Space},
     Element, Length, Task,
@@ -125,10 +126,10 @@ impl CosmicState {
     pub fn view(&self) -> Element<'_, CosmicMsg> {
         let is_running = self.running.is_some();
         let mut col = column![
-            text("COSMIC 트윅").size(20),
+            text("COSMIC 트윅").size(TYPE_SCREEN_TITLE).font(FONT_BOLD),
             Space::with_height(6),
             text("패치 적용 시 소스를 클론하고 cargo build --release로 빌드합니다 (수 분 소요).")
-                .size(11)
+                .size(TYPE_CAPTION)
                 .color(C_DIM),
             Space::with_height(16),
         ];
@@ -205,12 +206,12 @@ fn gesture_card(status: &CosmicStatus, disabled: bool) -> Element<'static, Cosmi
         column![
             row![
                 column![
-                    text("3손가락 제스처 → 워크스페이스 오버뷰").size(13).color(C_TEXT),
+                    text("3손가락 제스처 → 워크스페이스 오버뷰").size(TYPE_BODY).font(FONT_SEMIBOLD).color(C_TEXT),
                     Space::with_height(3),
-                    text(desc).size(11).color(C_DIM),
+                    text(desc).size(TYPE_CAPTION).color(C_DIM),
                 ].width(Length::Fill),
                 column![
-                    text(status_txt).size(12).color(status_col),
+                    text(status_txt).size(TYPE_CAPTION).color(status_col),
                     Space::with_height(8),
                     btn,
                 ].align_x(iced::Alignment::End),
@@ -251,14 +252,14 @@ fn patch_card(
         column![
             row![
                 column![
-                    text(title).size(13).color(C_TEXT),
+                    text(title).size(TYPE_BODY).font(FONT_SEMIBOLD).color(C_TEXT),
                     Space::with_height(3),
-                    text(desc).size(11).color(C_DIM),
+                    text(desc).size(TYPE_CAPTION).color(C_DIM),
                     Space::with_height(4),
-                    text(ver_label).size(11).color(C_DIM),
+                    text(ver_label).size(TYPE_CAPTION).color(C_DIM),
                 ].width(Length::Fill),
                 column![
-                    text(status_txt).size(12).color(status_col),
+                    text(status_txt).size(TYPE_CAPTION).color(status_col),
                     Space::with_height(8),
                     btn,
                 ].align_x(iced::Alignment::End),
@@ -304,9 +305,9 @@ fn screenshot_shortcut_card(
     disabled: bool,
 ) -> Element<'static, CosmicMsg> {
     let mut details = column![
-        text("스크린샷 단축키").size(13).color(C_TEXT),
+        text("스크린샷 단축키").size(TYPE_BODY).color(C_TEXT),
         Space::with_height(4),
-        text("Ctrl+Shift+3 전체 · 4 영역 · 5 옵션").size(11).color(C_DIM),
+        text("Ctrl+Shift+3 전체 · 4 영역 · 5 옵션").size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(6),
     ];
 
@@ -317,7 +318,7 @@ fn screenshot_shortcut_card(
             ShortcutState::Ok => ("정상", C_OK),
         };
         details = details.push(
-            text(format!("{}: {}", shortcut.key, label)).size(11).color(color),
+            text(format!("{}: {}", shortcut.key, label)).size(TYPE_CAPTION).color(color),
         );
     }
 
@@ -326,7 +327,7 @@ fn screenshot_shortcut_card(
     details = details.push(Space::with_height(6));
     details = details.push(
         text(format!("shotbox 소스: {source} · 릴리스 바이너리: {binary}"))
-            .size(11)
+            .size(TYPE_CAPTION)
             .color(C_DIM),
     );
 

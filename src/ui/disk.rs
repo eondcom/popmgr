@@ -1,3 +1,4 @@
+use super::ime::{TYPE_SCREEN_TITLE, TYPE_BODY, TYPE_CAPTION, TYPE_CHIP, FONT_BOLD, FONT_SEMIBOLD};
 use iced::{
     widget::{column, container, row, scrollable, text, Space},
     Element, Length, Task,
@@ -91,10 +92,10 @@ impl DiskState {
 
     pub fn view(&self) -> Element<'_, DiskMsg> {
         let mut col = column![
-            text("디스크").size(20),
+            text("디스크").size(TYPE_SCREEN_TITLE).font(FONT_BOLD),
             Space::with_height(6),
             text("외장하드/USB 연결 상태를 보고 마운트·해제·안전 제거를 합니다. 연결하면 자동으로 목록에 나타납니다.")
-                .size(11)
+                .size(TYPE_CAPTION)
                 .color(C_DIM),
             Space::with_height(16),
         ];
@@ -104,7 +105,7 @@ impl DiskState {
         }
 
         if !self.scanned {
-            col = col.push(text("스캔 중...").size(13).color(C_DIM));
+            col = col.push(text("스캔 중...").size(TYPE_BODY).color(C_DIM));
             return scrollable(container(col).padding([4, 0])).into();
         }
 
@@ -113,14 +114,14 @@ impl DiskState {
             self.disks.iter().partition(|d| d.removable || d.tran == "usb");
 
         // 외장 디스크
-        col = col.push(text("외장 디스크").size(14).color(C_DIM));
+        col = col.push(text("외장 디스크").size(TYPE_BODY).font(FONT_SEMIBOLD).color(C_DIM));
         col = col.push(Space::with_height(8));
         if external.is_empty() {
             col = col.push(card(column![
-                text("연결된 외장 디스크 없음").size(12).color(C_DIM),
+                text("연결된 외장 디스크 없음").size(TYPE_CAPTION).color(C_DIM),
                 Space::with_height(4),
                 text("케이블은 꽂혀 있는데 안 보이면(안전 제거 후 등) '다시 연결'을 누르세요 — USB 포트 전원을 다시 켭니다.")
-                    .size(10).color(C_DIM),
+                    .size(TYPE_CHIP).color(C_DIM),
             ]));
         } else {
             for d in &external {
@@ -136,7 +137,7 @@ impl DiskState {
             .filter(|d| d.parts.iter().any(part_actionable))
             .collect();
         if !internal_mountable.is_empty() {
-            col = col.push(text("내장 파티션").size(14).color(C_DIM));
+            col = col.push(text("내장 파티션").size(TYPE_BODY).font(FONT_SEMIBOLD).color(C_DIM));
             col = col.push(Space::with_height(8));
             for d in internal_mountable {
                 col = col.push(disk_card(d, is_busy, false));
@@ -180,8 +181,8 @@ fn disk_card<'a>(d: &'a DiskGroup, is_busy: bool, external: bool) -> Element<'a,
 
     let mut body = column![
         row![
-            text(title).size(13),
-            text(tran_tag).size(11).color(C_BLUE),
+            text(title).size(TYPE_BODY),
+            text(tran_tag).size(TYPE_CAPTION).color(C_BLUE),
         ].align_y(iced::Alignment::Center),
         Space::with_height(8),
     ];
@@ -193,7 +194,7 @@ fn disk_card<'a>(d: &'a DiskGroup, is_busy: bool, external: bool) -> Element<'a,
     };
 
     if parts.is_empty() {
-        body = body.push(text("파티션 없음 (미디어 없음 또는 포맷 필요)").size(12).color(C_DIM));
+        body = body.push(text("파티션 없음 (미디어 없음 또는 포맷 필요)").size(TYPE_CAPTION).color(C_DIM));
     }
 
     let mut any_mounted = false;
@@ -206,14 +207,14 @@ fn disk_card<'a>(d: &'a DiskGroup, is_busy: bool, external: bool) -> Element<'a,
         };
 
         let mut r = row![
-            container(text(name).size(12)).width(Length::Fill),
+            container(text(name).size(TYPE_CAPTION)).width(Length::Fill),
         ].align_y(iced::Alignment::Center);
 
         match &p.mountpoint {
             Some(mp) => {
                 any_mounted = true;
                 r = r.push(
-                    container(text(format!("● {mp}")).size(11).color(C_OK))
+                    container(text(format!("● {mp}")).size(TYPE_CAPTION).color(C_OK))
                         .width(Length::Shrink)
                 );
                 r = r.push(Space::with_width(8));
@@ -225,11 +226,11 @@ fn disk_card<'a>(d: &'a DiskGroup, is_busy: bool, external: bool) -> Element<'a,
             }
             None => {
                 if p.fstype.as_deref().is_some_and(|f| f != "swap") {
-                    r = r.push(text("○ 마운트 안 됨").size(11).color(C_DIM));
+                    r = r.push(text("○ 마운트 안 됨").size(TYPE_CAPTION).color(C_DIM));
                     r = r.push(Space::with_width(8));
                     r = r.push(action_btn("마운트", DiskMsg::Mount(p.path.clone()), !is_busy, C_BLUE));
                 } else {
-                    r = r.push(text("파일시스템 없음").size(11).color(C_DIM));
+                    r = r.push(text("파일시스템 없음").size(TYPE_CAPTION).color(C_DIM));
                 }
             }
         }
@@ -242,7 +243,7 @@ fn disk_card<'a>(d: &'a DiskGroup, is_busy: bool, external: bool) -> Element<'a,
         body = body.push(Space::with_height(6));
         let mut bottom = row![Space::with_width(Length::Fill)].align_y(iced::Alignment::Center);
         if any_mounted {
-            bottom = bottom.push(text("안전 제거하려면 먼저 모든 파티션을 해제하세요").size(10).color(C_DIM));
+            bottom = bottom.push(text("안전 제거하려면 먼저 모든 파티션을 해제하세요").size(TYPE_CHIP).color(C_DIM));
             bottom = bottom.push(Space::with_width(8));
         }
         bottom = bottom.push(action_btn(
