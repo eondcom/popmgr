@@ -1598,7 +1598,7 @@ fn recording_output_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp")).join("Videos/Recordings")
 }
 
-fn shortcuts_config_path() -> Option<PathBuf> {
+pub(crate) fn shortcuts_config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| {
         home.join(".config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom")
     })
@@ -2027,11 +2027,12 @@ fn register_recording_shortcut() -> CmdResult {
     }
 }
 
-fn add_recording_shortcut_description(content: &str, key: &str, command: &str, description: &str) -> String {
+pub(crate) fn add_recording_shortcut_description(content: &str, key: &str, command: &str, description: &str) -> String {
     let entry = format!("(modifiers: [Ctrl, Shift], key: \"{key}\"): Spawn(\"{command}\")");
+    // 한 줄로 쓴다 — 예전엔 줄 이어쓰기를 `\\` 로 써서 설정 파일에 역슬래시가 글자로 박혔고,
+    // COSMIC 이 그 줄(6번은 처음부터)을 해석하지 못해 단축키가 반응하지 않았다(2026-09-25).
     let described = format!(
-        "(modifiers: [Ctrl, Shift], key: \"{key}\", description: Some(\"{description}\")): \\
-         Spawn(\"{command}\")"
+        "(modifiers: [Ctrl, Shift], key: \"{key}\", description: Some(\"{description}\")): Spawn(\"{command}\")"
     );
     content.replace(&entry, &described)
 }
@@ -2417,6 +2418,8 @@ mod tests {
         assert!(described.starts_with(&SEVEN_SHORTCUTS[..SEVEN_SHORTCUTS.len() - 2]));
         assert!(described.contains("key: \"6\", description: Some(\"popmgr 화면 녹화 토글\")"));
         assert_eq!(parse_shortcut_entries(&described).len(), 8);
+        // RON 에는 줄 이어쓰기가 없다 — 역슬래시가 들어가면 COSMIC 이 그 단축키를 무시한다
+        assert!(!described.contains('\\'), "{described}");
     }
 
     // 실제 `cosmic-randr list` 출력(2026-09-25, 색 코드 포함)
