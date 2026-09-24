@@ -96,6 +96,9 @@ fn main() -> iced::Result {
     if args.get(1).map(|s| s.as_str()) == Some("--record-toggle") {
         std::process::exit(ui::apps::record_toggle_cli());
     }
+    if args.get(1).map(|s| s.as_str()) == Some("--ime-fix") {
+        std::process::exit(ui::ime::ime_fix_cli());
+    }
     if args.get(1).map(|s| s.as_str()) == Some("--record-region-toggle") {
         std::process::exit(ui::apps::record_region_toggle_cli());
     }
