@@ -6,8 +6,6 @@ BIN_DIR="$HOME/.local/bin"
 APP_DIR="$HOME/.local/share/applications"
 COSMIC_FILES_SRC="/tmp/popmgr-cosmic-files-src"
 COSMIC_FILES_PATCH="/tmp/popmgr-cosmic-files-patch"
-COSMIC_COMP_SRC="/tmp/popmgr-cosmic-comp-src"
-COSMIC_COMP_PATCH="/tmp/popmgr-cosmic-comp-patch"
 
 echo "=== popmgr 설치 시작 ==="
 
@@ -68,33 +66,29 @@ rm -rf "$COSMIC_FILES_SRC" "$COSMIC_FILES_PATCH"
 git clone --depth 1 https://github.com/eondcom/cosmic-files-copy-path "$COSMIC_FILES_PATCH" 2>&1
 git clone https://github.com/pop-os/cosmic-files "$COSMIC_FILES_SRC" 2>&1
 cd "$COSMIC_FILES_SRC"
-git checkout bf01bb3 2>&1
-git apply "$COSMIC_FILES_PATCH/cosmic-files-copy-path.patch" 2>&1
-export LIBCLANG_PATH=/usr/lib/llvm-18/lib
-cargo build --release 2>&1
-pkexec bash -c "cp -a /usr/bin/cosmic-files /usr/bin/cosmic-files.bak 2>/dev/null || true; install -Dm0755 $COSMIC_FILES_SRC/target/release/cosmic-files /usr/bin/cosmic-files"
-echo "  -> copy-path 패치 완료"
+# 설치된 패키지와 같은 커밋으로 빌드한다 (고정 커밋이면 파일 관리자가 구버전으로 내려간다)
+CF_VER=$(dpkg -l cosmic-files 2>/dev/null | awk '/^ii/ {print $3}')
+CF_COMMIT=$(echo "$CF_VER" | rev | cut -d'~' -f1 | rev)
+git checkout "$CF_COMMIT" 2>&1
+# fuzz 를 키우지 않는다 — 컨텍스트가 무시돼 다른 블록에 조용히 붙을 수 있다
+patch -p1 < "$COSMIC_FILES_PATCH/cosmic-files-copy-path.patch"
+N=$(grep -A1 'menu_item(fl!("copy"), Action::Copy)' src/menu.rs | grep -c 'Action::CopyPath' || true)
+if [ "$N" != "2" ]; then
+    echo "  !! 패치 검증 실패(메뉴 2곳 중 $N 곳) — cosmic-files 는 설치하지 않습니다"
+else
+    LIBCLANG_PATH=$(ls -d /usr/lib/llvm-*/lib 2>/dev/null | sort -V | tail -1)
+    export LIBCLANG_PATH
+    cargo build --release 2>&1
+    pkexec bash -c "cp -a /usr/bin/cosmic-files /usr/bin/cosmic-files.bak 2>/dev/null || true; install -Dm0755 $COSMIC_FILES_SRC/target/release/cosmic-files /usr/bin/cosmic-files"
+    echo "  -> copy-path 패치 완료"
+    MARKER_DIR="$HOME/.local/share/popmgr"
+    mkdir -p "$MARKER_DIR"
+    echo "{\"copy_path\":true,\"three_finger\":false,\"copy_path_ver\":\"$CF_VER\"}" > "$MARKER_DIR/patches.json"
+fi
 
-# 5. cosmic-comp 3-finger 패치
+# 5. 3손가락 제스처 — 컴포지터 패치 대신 popmgr 사용자 서비스 (2026-09-24 변경)
 echo ""
-echo "[5/5] COSMIC Comp 3-finger 패치 적용..."
-echo "  (빌드 시간: 약 5~10분)"
-sudo apt-get install -y libinput-dev libudev-dev libgbm-dev libseat-dev libwayland-dev libpixman-1-dev 2>&1 | grep -E "^(Reading|Setting|Unpacking|Get:)" || true
-
-rm -rf "$COSMIC_COMP_SRC" "$COSMIC_COMP_PATCH"
-git clone --depth 1 https://github.com/eondcom/cosmic-three-finger-gesture "$COSMIC_COMP_PATCH" 2>&1
-git clone https://github.com/pop-os/cosmic-comp "$COSMIC_COMP_SRC" 2>&1
-cd "$COSMIC_COMP_SRC"
-git checkout 22fe419 2>&1
-git apply "$COSMIC_COMP_PATCH/three-finger-gesture.patch" 2>&1
-cargo build --release 2>&1
-pkexec bash -c "cp -a /usr/bin/cosmic-comp /usr/bin/cosmic-comp.bak 2>/dev/null || true; install -Dm0755 $COSMIC_COMP_SRC/target/release/cosmic-comp /usr/bin/cosmic-comp"
-echo "  -> 3-finger 패치 완료"
-
-# 패치 마커 기록
-MARKER_DIR="$HOME/.local/share/popmgr"
-mkdir -p "$MARKER_DIR"
-echo '{"copy_path":true,"three_finger":true}' > "$MARKER_DIR/patches.json"
+echo "[5/5] 3손가락 제스처: popmgr → COSMIC 탭 → '3손가락 제스처' 켜기 (root·재빌드 불필요)"
 
 echo ""
 echo "=== 설치 완료 ==="
@@ -104,4 +98,4 @@ echo "  또는 앱 런처에서 'popmgr' 검색"
 echo ""
 echo "  복구 (패치 제거):"
 echo "    sudo cp /usr/bin/cosmic-files.bak /usr/bin/cosmic-files"
-echo "    sudo cp /usr/bin/cosmic-comp.bak  /usr/bin/cosmic-comp"
+echo "    (예전 3-finger 컴포지터 패치가 있다면) sudo apt-get install --reinstall cosmic-comp"
