@@ -79,6 +79,9 @@ copy-path 패치 적용 방식:
   AppImage를 받아둔 경우에는 AppImage를 `~/Applications`로 정리해
   아이콘·바로가기·독에 등록하는 경로로 넘어간다.
 - APT·Flatpak 패키지 검색 및 일괄 제거
+- **화면 녹화**(GPU Screen Recorder, NVENC): Ctrl+Shift+6 전체 화면, **Ctrl+Shift+7 영역**(맥 Cmd+Shift+5 의 "선택 부분 기록").
+  영역은 slurp 로 드래그해 고르고, 포털로 전체를 녹화한 뒤 정지할 때 ffmpeg 로 그 영역만 잘라 저장(배율 반영, NVENC → x264 폴백).
+  GSR `-w region`(KMS)은 이 PC 에서 root 헬퍼가 실패해 쓰지 않는다. 출력: `~/Videos/Recordings`
 
 ---
 

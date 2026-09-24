@@ -57,6 +57,8 @@ pub struct RecordingStatus {
     active: bool,
     shortcut_registered: bool,
     output_dir: PathBuf,
+    /// 영역 녹화용 영역 선택 도구
+    slurp_installed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +122,7 @@ pub enum AppsMsg {
     SetMpvDefaultPlayer,
     InstallRecording,
     RegisterRecordingShortcut,
+    InstallSlurp,
     ToggleRecording,
     Done(CmdResult),
 }
@@ -407,6 +410,14 @@ echo "참고: 터미널에서 'orca' 를 치면 GNOME 스크린리더가 실행�
             AppsMsg::RegisterRecordingShortcut => {
                 let result = register_recording_shortcut();
                 (Task::none(), Some(result))
+            }
+            AppsMsg::InstallSlurp => {
+                self.running = Some("slurp 설치 중 (비밀번호 확인)...".into());
+                let t = Task::perform(
+                    async { runner::run_sh("pkexec apt-get install -y slurp 2>&1").await },
+                    AppsMsg::Done,
+                );
+                (t, None)
             }
             AppsMsg::ToggleRecording => {
                 let result = record_toggle_cli_result();
@@ -1412,6 +1423,7 @@ fn recording_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'stati
     };
     let active = recording.is_some_and(|s| s.active);
     let shortcut = if recording.is_some_and(|s| s.shortcut_registered) { "등록됨" } else { "미등록" };
+    let slurp = recording.is_some_and(|s| s.slurp_installed);
     let output = recording
         .map(|s| s.output_dir.display().to_string())
         .unwrap_or_else(|| recording_output_dir().display().to_string());
@@ -1425,18 +1437,24 @@ fn recording_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'stati
         text(obs).size(TYPE_CAPTION).color(C_DIM),
         text(if active { "녹화: 진행 중" } else { "녹화: 정지" }).size(TYPE_CAPTION)
             .color(if active { C_OK } else { C_DIM }),
-        text(format!("Ctrl+Shift+6: {shortcut} · 출력: {output}")).size(TYPE_CAPTION).color(C_DIM),
+        text(format!("Ctrl+Shift+6 전체 · Ctrl+Shift+7 영역(드래그): {shortcut} · 출력: {output}"))
+            .size(TYPE_CAPTION).color(C_DIM),
+        text(if slurp { "영역 선택 도구(slurp): 있음" } else { "영역 선택 도구(slurp): 없음 — 영역 녹화에 필요" })
+            .size(TYPE_CAPTION).color(if slurp { C_DIM } else { C_WARN }),
         Space::with_height(3),
         text("설치 시 시스템 인증(polkit) 창이 뜹니다.").size(TYPE_CHIP).color(C_WARN),
     ];
     let mut right = column![].spacing(6).align_x(iced::Alignment::End);
     right = right.push(action_btn("설치/런타임 맞추기", AppsMsg::InstallRecording, !disabled, C_OK));
     right = right.push(action_btn(
-        "단축키 등록 (Ctrl+Shift+6)",
+        "단축키 등록 (Ctrl+Shift+6·7)",
         AppsMsg::RegisterRecordingShortcut,
         !disabled,
         C_BLUE,
     ));
+    if !slurp {
+        right = right.push(action_btn("slurp 설치 (pkexec)", AppsMsg::InstallSlurp, !disabled, C_BLUE));
+    }
     right = right.push(action_btn(
         if active { "지금 녹화 정지" } else { "지금 녹화 시작" },
         AppsMsg::ToggleRecording,
@@ -1586,9 +1604,11 @@ fn shortcuts_config_path() -> Option<PathBuf> {
     })
 }
 
+/// 전체(6)·영역(7) 녹화 단축키가 둘 다 등록돼 있는지
 fn recording_shortcut_registered(path: &Path) -> bool {
     std::fs::read_to_string(path).ok().is_some_and(|content| {
-        parse_shortcut_entries(&content).iter().any(|entry| is_target_shortcut(entry, "6"))
+        let entries = parse_shortcut_entries(&content);
+        ["6", "7"].iter().all(|key| entries.iter().any(|entry| is_target_shortcut(entry, key)))
     })
 }
 
@@ -1686,12 +1706,14 @@ fn record_toggle_cli_result() -> CmdResult {
         .is_ok_and(|status| status.success());
     let output_dir = recording_output_dir();
     if active {
-        let stopped = Command::new("pkill").args(["-INT", "-f", PGREP_PATTERN])
-            .status().is_ok_and(|status| status.success());
-        if !stopped {
+        // 파일이 완전히 닫힐 때까지 기다린다 — 영역 녹화면 바로 이어서 ffmpeg 로 자르기 때문
+        if !stop_gsr(PGREP_PATTERN) {
             return CmdResult { success: false, output: "녹화 정지 신호 전송 실패".into() };
         }
-        std::thread::sleep(Duration::from_secs(1));
+        if let Some(message) = finalize_region_recording() {
+            notify("녹화 저장됨", &message);
+            return CmdResult { success: true, output: message };
+        }
         let filename = newest_file(&output_dir).and_then(|path| {
             path.file_name().map(|name| name.to_string_lossy().into_owned())
         }).unwrap_or_else(|| "저장 파일을 찾지 못했습니다".into());
@@ -1731,6 +1753,253 @@ pub fn record_toggle_cli() -> i32 {
     if record_toggle_cli_result().success { 0 } else { 1 }
 }
 
+// ─── 영역 녹화 (Ctrl+Shift+7, 맥 Cmd+Shift+5 의 "선택 부분 기록") ─────────────
+//
+// 이 PC 에서 GSR 의 `-w region`(KMS 캡처)은 root 헬퍼가 실패해 쓸 수 없다(2026-09-14 실측).
+// 그래서 포털로 모니터 전체를 녹화하고, 정지할 때 ffmpeg 로 선택 영역만 잘라낸다.
+// 영역은 slurp 로 실제 화면 위에서 드래그해 고른다(논리 좌표 → 배율을 곱해 실제 픽셀로).
+
+/// slurp 출력 "x y w h output" (논리 좌표)
+#[derive(Debug, Clone, PartialEq)]
+struct Selection {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    output: String,
+}
+
+/// cosmic-randr 의 출력 하나: 위치(논리), 배율, 현재 모드(실제 픽셀)
+#[derive(Debug, Clone, PartialEq)]
+struct OutputGeometry {
+    x: i32,
+    y: i32,
+    scale: f64,
+    mode_w: u32,
+    mode_h: u32,
+}
+
+const SLURP_FORMAT: &str = "%x %y %w %h %o";
+
+fn parse_slurp(s: &str) -> Option<Selection> {
+    let mut it = s.split_whitespace();
+    let x = it.next()?.parse().ok()?;
+    let y = it.next()?.parse().ok()?;
+    let w = it.next()?.parse().ok()?;
+    let h = it.next()?.parse().ok()?;
+    let output = it.next().unwrap_or("").to_string();
+    Some(Selection { x, y, w, h, output })
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // ESC [ ... 문자 로 끝나는 색 코드 건너뛰기
+            for n in chars.by_ref() {
+                if n.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `cosmic-randr list` 에서 output 이름의 위치·배율·현재 모드를 읽는다. 이름이 비면 첫 출력.
+fn parse_randr(list: &str, output: &str) -> Option<OutputGeometry> {
+    let text = strip_ansi(list);
+    let mut current: Option<String> = None;
+    let (mut pos, mut scale, mut mode) = (None, None, None);
+    for line in text.lines() {
+        if !line.starts_with(' ') && !line.trim().is_empty() {
+            if current.is_some() && pos.is_some() {
+                break;
+            }
+            let name = line.split_whitespace().next().unwrap_or("").to_string();
+            current = (output.is_empty() || name == output).then_some(name);
+            continue;
+        }
+        if current.is_none() {
+            continue;
+        }
+        let t = line.trim();
+        if let Some(v) = t.strip_prefix("Position:") {
+            let mut p = v.trim().split(',');
+            pos = Some((p.next()?.trim().parse().ok()?, p.next()?.trim().parse().ok()?));
+        } else if let Some(v) = t.strip_prefix("Scale:") {
+            scale = v.trim().trim_end_matches('%').parse::<f64>().ok().map(|p| p / 100.0);
+        } else if t.contains("(current)") {
+            let (w, h) = t.split_whitespace().next()?.split_once('x')?;
+            mode = Some((w.parse().ok()?, h.parse().ok()?));
+        }
+    }
+    let (x, y) = pos?;
+    let (mode_w, mode_h) = mode?;
+    Some(OutputGeometry { x, y, scale: scale.unwrap_or(1.0), mode_w, mode_h })
+}
+
+/// 논리 좌표 선택 → 녹화 영상 안의 실제 픽셀 crop(x, y, w, h). H.264 는 짝수 크기가 필요하다.
+/// 영상 크기가 그 모니터의 실제 해상도와 다르면(포털에서 창을 골랐다든지) None → 자르지 않는다.
+fn physical_crop(sel: &Selection, out: &OutputGeometry, video_w: u32, video_h: u32) -> Option<(u32, u32, u32, u32)> {
+    if (video_w, video_h) != (out.mode_w, out.mode_h) {
+        return None;
+    }
+    let to_px = |v: i32| (v as f64 * out.scale).round().max(0.0) as u32;
+    let even = |v: u32| v & !1;
+    let x = even(to_px(sel.x - out.x)).min(video_w);
+    let y = even(to_px(sel.y - out.y)).min(video_h);
+    let w = even(to_px(sel.w).min(video_w - x));
+    let h = even(to_px(sel.h).min(video_h - y));
+    (w >= 16 && h >= 16).then_some((x, y, w, h))
+}
+
+fn region_state_path() -> PathBuf {
+    let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(dir).join("popmgr-record-region")
+}
+
+/// 녹화 중인 GSR 에 정지 신호를 보내고 파일이 닫힐 때까지 기다린다.
+fn stop_gsr(pattern: &str) -> bool {
+    let stopped = Command::new("pkill").args(["-INT", "-f", pattern]).status().is_ok_and(|s| s.success());
+    if !stopped {
+        return false;
+    }
+    for _ in 0..30 {
+        std::thread::sleep(Duration::from_millis(500));
+        let alive = Command::new("pgrep").args(["-f", pattern]).status().is_ok_and(|s| s.success());
+        if !alive {
+            break;
+        }
+    }
+    true
+}
+
+fn video_size(path: &Path) -> Option<(u32, u32)> {
+    let out = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    let (w, h) = s.trim().split_once(',')?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
+/// 영역 녹화였으면(상태 파일 있음) 잘라서 최종 파일을 만든다. 반환: 사용자에게 보일 결과 문장.
+fn finalize_region_recording() -> Option<String> {
+    finalize_region_recording_from(&region_state_path(), false)
+}
+
+/// quiet: 진행 알림을 띄우지 않는다(테스트용)
+fn finalize_region_recording_from(state_path: &Path, quiet: bool) -> Option<String> {
+    let state = std::fs::read_to_string(state_path).ok()?;
+    let _ = std::fs::remove_file(state_path);
+    let mut lines = state.lines();
+    let raw = PathBuf::from(lines.next()?);
+    let final_path = PathBuf::from(lines.next()?);
+    let sel = parse_slurp(lines.next()?)?;
+    let geo: Vec<&str> = lines.next()?.split_whitespace().collect();
+    let out = OutputGeometry {
+        x: geo.first()?.parse().ok()?,
+        y: geo.get(1)?.parse().ok()?,
+        scale: geo.get(2)?.parse().ok()?,
+        mode_w: geo.get(3)?.parse().ok()?,
+        mode_h: geo.get(4)?.parse().ok()?,
+    };
+    let name = final_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let crop = video_size(&raw).and_then(|(vw, vh)| physical_crop(&sel, &out, vw, vh));
+    let Some((x, y, w, h)) = crop else {
+        let _ = std::fs::rename(&raw, &final_path);
+        return Some(format!("영역을 자를 수 없어 전체 화면으로 저장: {name}"));
+    };
+    if !quiet {
+        notify("영역 녹화 정리 중", &format!("{w}x{h} 로 잘라내는 중..."));
+    }
+    let filter = format!("crop={w}:{h}:{x}:{y}");
+    // NVENC 가 안 되면 CPU(libx264)로
+    let encoders: [&[&str]; 2] = [
+        &["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "23"],
+        &["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"],
+    ];
+    for enc in encoders {
+        let ok = Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-i"])
+            .arg(&raw)
+            .args(["-vf", &filter])
+            .args(enc)
+            .args(["-c:a", "copy"])
+            .arg(&final_path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if ok {
+            let _ = std::fs::remove_file(&raw);
+            return Some(format!("영역 녹화 저장됨({w}x{h}): {name}"));
+        }
+    }
+    let _ = std::fs::rename(&raw, &final_path);
+    Some(format!("잘라내기 실패 — 전체 화면으로 저장: {name}"))
+}
+
+fn record_region_toggle_cli_result() -> CmdResult {
+    const PGREP_PATTERN: &str = "gpu-screen-recorder -w";
+    let active = Command::new("pgrep").args(["-f", PGREP_PATTERN]).status().is_ok_and(|s| s.success());
+    if active {
+        // 전체 녹화 중에 눌러도 정지는 같다 — 영역 녹화였으면 잘라서 저장
+        return record_toggle_cli_result();
+    }
+    if !Command::new("which").arg("slurp").stdout(Stdio::null()).status().is_ok_and(|s| s.success()) {
+        notify("영역 녹화 불가", "popmgr 앱 관리 탭에서 'slurp 설치'를 먼저 누르세요.");
+        return CmdResult { success: false, output: "slurp 가 설치되지 않았습니다.".into() };
+    }
+    let picked = Command::new("slurp").args(["-f", SLURP_FORMAT]).output();
+    let Some(sel) = picked.ok().filter(|o| o.status.success())
+        .and_then(|o| parse_slurp(&String::from_utf8_lossy(&o.stdout))) else {
+        return CmdResult { success: false, output: "영역 선택이 취소됐습니다.".into() };
+    };
+    let randr = Command::new("cosmic-randr").arg("list").output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let Some(geo) = parse_randr(&randr, &sel.output) else {
+        return CmdResult { success: false, output: "모니터 배율을 읽지 못했습니다(cosmic-randr).".into() };
+    };
+    let output_dir = recording_output_dir();
+    if let Err(error) = std::fs::create_dir_all(&output_dir) {
+        return CmdResult { success: false, output: format!("녹화 폴더 생성 실패: {error}") };
+    }
+    let final_path = recording_output_file(&output_dir);
+    let raw = output_dir.join(format!(
+        ".region-{}",
+        final_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    ));
+    let state = format!(
+        "{}\n{}\n{} {} {} {} {}\n{} {} {} {} {}\n",
+        raw.display(), final_path.display(), sel.x, sel.y, sel.w, sel.h, sel.output,
+        geo.x, geo.y, geo.scale, geo.mode_w, geo.mode_h
+    );
+    if let Err(error) = std::fs::write(region_state_path(), state) {
+        return CmdResult { success: false, output: format!("영역 상태 저장 실패: {error}") };
+    }
+    let started = Command::new("setsid").args(recording_start_args(&raw)).stdin(Stdio::null())
+        .stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    match started {
+        Ok(_) => {
+            notify("영역 녹화 시작", &format!("{}x{} · Ctrl+Shift+7 로 정지", sel.w, sel.h));
+            CmdResult { success: true, output: "영역 녹화를 시작했습니다.".into() }
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(region_state_path());
+            CmdResult { success: false, output: format!("녹화 시작 실패: {error}") }
+        }
+    }
+}
+
+pub fn record_region_toggle_cli() -> i32 {
+    if record_region_toggle_cli_result().success { 0 } else { 1 }
+}
+
 fn register_recording_shortcut() -> CmdResult {
     let Some(path) = shortcuts_config_path() else {
         return CmdResult { success: false, output: "홈 디렉터리를 찾을 수 없습니다.".into() };
@@ -1740,25 +2009,28 @@ fn register_recording_shortcut() -> CmdResult {
         Ok(_) => return CmdResult { success: false, output: "popmgr 절대 경로를 찾지 못했습니다.".into() },
         Err(error) => return CmdResult { success: false, output: format!("popmgr 경로 확인 실패: {error}") },
     };
-    let command = format!("{} --record-toggle", executable.display());
-    if let Err(error) = write_shortcut_updates(&path, &[("6", command.clone())]) {
+    let full = format!("{} --record-toggle", executable.display());
+    let region = format!("{} --record-region-toggle", executable.display());
+    if let Err(error) = write_shortcut_updates(&path, &[("6", full.clone()), ("7", region.clone())]) {
         return CmdResult { success: false, output: format!("단축키 저장 실패: {error}") };
     }
     match std::fs::read_to_string(&path).and_then(|content| {
-        std::fs::write(&path, add_recording_shortcut_description(&content, &command))
+        let content = add_recording_shortcut_description(&content, "6", &full, "popmgr 화면 녹화 토글");
+        let content = add_recording_shortcut_description(&content, "7", &region, "popmgr 영역 녹화 토글");
+        std::fs::write(&path, content)
     }) {
         Ok(()) => CmdResult {
             success: true,
-            output: "Ctrl+Shift+6 녹화 토글 단축키를 등록했습니다: popmgr 화면 녹화 토글".into(),
+            output: "녹화 단축키를 등록했습니다: Ctrl+Shift+6 전체 화면 · Ctrl+Shift+7 영역(드래그)".into(),
         },
         Err(error) => CmdResult { success: false, output: format!("단축키 설명 저장 실패: {error}") },
     }
 }
 
-fn add_recording_shortcut_description(content: &str, command: &str) -> String {
-    let entry = format!("(modifiers: [Ctrl, Shift], key: \"6\"): Spawn(\"{command}\")");
+fn add_recording_shortcut_description(content: &str, key: &str, command: &str, description: &str) -> String {
+    let entry = format!("(modifiers: [Ctrl, Shift], key: \"{key}\"): Spawn(\"{command}\")");
     let described = format!(
-        "(modifiers: [Ctrl, Shift], key: \"6\", description: Some(\"popmgr 화면 녹화 토글\")): \\
+        "(modifiers: [Ctrl, Shift], key: \"{key}\", description: Some(\"{description}\")): \\
          Spawn(\"{command}\")"
     );
     content.replace(&entry, &described)
@@ -1974,6 +2246,7 @@ async fn scan_apps() -> AppsStatus {
         active,
         shortcut_registered,
         output_dir: recording_output_dir(),
+        slurp_installed: runner::run("which", &["slurp"]).await.success,
     };
 
     let installed = runner::run("which", &["mpv"]).await.success;
@@ -2138,10 +2411,96 @@ mod tests {
             SEVEN_SHORTCUTS,
             &[("6", "/absolute/popmgr --record-toggle".into())],
         );
-        let described = add_recording_shortcut_description(&updated, "/absolute/popmgr --record-toggle");
+        let described = add_recording_shortcut_description(
+            &updated, "6", "/absolute/popmgr --record-toggle", "popmgr 화면 녹화 토글",
+        );
         assert!(described.starts_with(&SEVEN_SHORTCUTS[..SEVEN_SHORTCUTS.len() - 2]));
         assert!(described.contains("key: \"6\", description: Some(\"popmgr 화면 녹화 토글\")"));
         assert_eq!(parse_shortcut_entries(&described).len(), 8);
+    }
+
+    // 실제 `cosmic-randr list` 출력(2026-09-25, 색 코드 포함)
+    const RANDR: &str = "\u{1b}[1meDP-1\u{1b}[0m \u{1b}[1;32m(enabled)\u{1b}[0m\u{1b}[1;33m\n  Make: \u{1b}[0mSharp\n  \
+        Position: \u{1b}[0m0,0\u{1b}[1;33m\n  Scale: \u{1b}[0m200%\u{1b}[1;33m\n  Transform: \u{1b}[0mnormal\n\n  \
+        Modes:\u{1b}[0m\n    3840x2160 @  59.997 Hz (current) (preferred)\n    2560x1600 @  60.000 Hz\n\
+        HDMI-A-1 (enabled)\n  Position: 1920,0\n  Scale: 100%\n    1920x1080 @  60.000 Hz (current)\n";
+
+    #[test]
+    fn parses_slurp_selection() {
+        let s = parse_slurp("100 50 640 360 eDP-1\n").unwrap();
+        assert_eq!((s.x, s.y, s.w, s.h, s.output.as_str()), (100, 50, 640, 360, "eDP-1"));
+        assert!(parse_slurp("").is_none());
+        assert!(parse_slurp("selection cancelled").is_none());
+    }
+
+    #[test]
+    fn parses_randr_with_color_codes_and_picks_named_output() {
+        let e = parse_randr(RANDR, "eDP-1").unwrap();
+        assert_eq!((e.x, e.y, e.scale, e.mode_w, e.mode_h), (0, 0, 2.0, 3840, 2160));
+        let h = parse_randr(RANDR, "HDMI-A-1").unwrap();
+        assert_eq!((h.x, h.y, h.scale, h.mode_w, h.mode_h), (1920, 0, 1.0, 1920, 1080));
+        assert_eq!(parse_randr(RANDR, "").unwrap().mode_w, 3840);
+        assert!(parse_randr(RANDR, "DP-9").is_none());
+    }
+
+    #[test]
+    fn crop_scales_logical_selection_to_video_pixels() {
+        let out = OutputGeometry { x: 0, y: 0, scale: 2.0, mode_w: 3840, mode_h: 2160 };
+        let sel = Selection { x: 100, y: 50, w: 641, h: 361, output: "eDP-1".into() };
+        // 논리 641x361 → 1282x722 (짝수), 위치 200,100
+        assert_eq!(physical_crop(&sel, &out, 3840, 2160), Some((200, 100, 1282, 722)));
+    }
+
+    #[test]
+    fn crop_clamps_to_video_and_rejects_mismatched_or_tiny() {
+        let out = OutputGeometry { x: 0, y: 0, scale: 2.0, mode_w: 3840, mode_h: 2160 };
+        let edge = Selection { x: 1800, y: 1000, w: 500, h: 500, output: String::new() };
+        assert_eq!(physical_crop(&edge, &out, 3840, 2160), Some((3600, 2000, 240, 160)));
+        // 포털에서 창을 골라 영상 크기가 모니터와 다르면 자르지 않는다
+        assert_eq!(physical_crop(&edge, &out, 1280, 720), None);
+        let tiny = Selection { x: 0, y: 0, w: 4, h: 4, output: String::new() };
+        assert_eq!(physical_crop(&tiny, &out, 3840, 2160), None);
+    }
+
+    #[test]
+    fn crop_uses_output_offset_for_second_monitor() {
+        let out = OutputGeometry { x: 1920, y: 0, scale: 1.0, mode_w: 1920, mode_h: 1080 };
+        let sel = Selection { x: 2020, y: 10, w: 300, h: 200, output: "HDMI-A-1".into() };
+        assert_eq!(physical_crop(&sel, &out, 1920, 1080), Some((100, 10, 300, 200)));
+    }
+
+    /// 정지 후 잘라내기 전 과정을 실제 ffmpeg 로: 4K 가짜 녹화 → 상태 파일 → finalize → 결과 해상도 확인.
+    /// (slurp 드래그·포털 녹화는 사람 손이 필요해 여기서 못 돌린다)
+    #[test]
+    fn finalize_crops_region_recording_with_real_ffmpeg() {
+        if Command::new("ffmpeg").arg("-version").stdout(Stdio::null()).status().is_err() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("popmgr-region-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let state_path = root.join("popmgr-record-region");
+        let raw = root.join(".region-Recording_x.mp4");
+        let final_path = root.join("Recording_x.mp4");
+        let made = Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=3840x2160:rate=5:duration=1",
+                   "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:v", "libx264", "-preset", "ultrafast",
+                   "-c:a", "libopus", "-shortest"])
+            .arg(&raw)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let state = format!(
+            "{}\n{}\n100 50 641 361 eDP-1\n0 0 2 3840 2160\n",
+            raw.display(), final_path.display()
+        );
+        std::fs::write(&state_path, state).unwrap();
+
+        let message = finalize_region_recording_from(&state_path, true).unwrap();
+        assert!(message.contains("1282x722"), "{message}");
+        assert_eq!(video_size(&final_path), Some((1282, 722)));
+        assert!(!raw.exists(), "원본 전체 녹화는 지워져야 한다");
+        assert!(!state_path.exists(), "상태 파일은 지워져야 한다");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
