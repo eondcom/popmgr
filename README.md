@@ -135,9 +135,17 @@ sudo cp /usr/bin/cosmic-comp.bak /usr/bin/cosmic-comp
 - 한글 IME 설정 가이드: [cosmic-os-korean](https://github.com/Hostingglobal-Tech/cosmic-os-korean)
 - Kensington 트랙볼 Bluetooth/USB 조사 노트: [`docs/bluetooth-usb-trackball-notes.md`](docs/bluetooth-usb-trackball-notes.md) (2026-09-11 해결)
 - 리눅스에서 켄징턴 트랙볼 블루투스 연결하기(게시판 팁): [`docs/tip-kensington-trackball-bluetooth-linux.md`](docs/tip-kensington-trackball-bluetooth-linux.md)
-- 폰트: NanumSquare (UI) + NanumGothic (한글 폴백)
+- 폰트: Pretendard Regular/SemiBold/Bold (EOND UI App, OFL — `assets/LICENSE-Pretendard.txt`) + DejaVu Sans (기호 폴백)
 
 ## 변경 이력
+
+### 2026-09-24 — 배터리 자동 절전 · 한글 풀림 · 3손가락 · 경로 복사 · 디자인 정합
+- **전원 탭 "배터리 부족 시 자동 절전"**: 방전 중 임계값(기본 5%) 이하면 root systemd 타이머(1분)가 절전, 복귀 후 3분 유예.
+  - 이유: UPower 1.90.3 은 `CriticalPowerAction=Suspend` 미지원이고 이 PC 는 디스크 스왑이 없어 HybridSleep 불가 → 2%에서 PowerOff 로 폴백해 작업이 날아갔다. Pop!_OS 저장소엔 1.90.3 뿐(Suspend 지원은 1.90.9+).
+- **IME 탭 fcitx5 중복 기동 진단/해제**: 유닛과 `/etc/xdg/autostart` 가 fcitx5 를 2개 띄워 Wayland IM 을 잃는 경우(Wayland 앱에서만 영문) — 자동실행을 `Hidden=true` 로 끔. 재시작은 `--replace` 대신 유닛 경유. 절전 훅 v3(`systemd-run --user`, v2 는 suspend cgroup 과 함께 죽어 무효였음).
+- **3손가락 제스처**: cosmic-comp 패치 폐기 → libinput 누적 이동량으로 판정하는 사용자 서비스(apt 업그레이드에 안 지워짐).
+- **경로 복사 패치**: `--fuzz 5` 제거, 적용 후 검증, 업그레이드로 소실 시 '다시 적용' 표시.
+- **디자인**: ui.eond.com/app 토큰 적용 — Pretendard(본문 400·버튼 600·제목 700), 버튼 `eond_ui_theme` 스타일(36 높이·모서리 10), 카드 `container::card`(모서리 14·여백 14), 글자 13/12/11, 라운딩 토큰. 이전엔 색만 토큰이었다.
 
 ### 2026-09-13 — fcitx5 한/영 상태 유지
 - fcitx5 전역 설정 진단/교정 카드 추가 (`ShareInputState=All`, `ActiveByDefault=True`, `AltTriggerKeys=` 빈 값).

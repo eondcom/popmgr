@@ -1,3 +1,4 @@
+use super::ime::{TYPE_SCREEN_TITLE, TYPE_BODY, TYPE_CAPTION, TYPE_CHIP, FONT_BOLD, FONT_SEMIBOLD};
 use iced::{
     widget::{column, container, row, scrollable, text, Space},
     Color, Element, Length, Task,
@@ -120,10 +121,10 @@ impl PrinterState {
 
     pub fn view(&self) -> Element<'_, PrinterMsg> {
         let mut col = column![
-            text("프린터").size(20),
+            text("프린터").size(TYPE_SCREEN_TITLE).font(FONT_BOLD),
             Space::with_height(6),
             text("연결된 프린터를 등록하고, 잘못 잡힌 큐(다른 기종 드라이버·중복 등록)를 찾아 정리합니다.")
-                .size(11)
+                .size(TYPE_CAPTION)
                 .color(C_DIM),
             Space::with_height(16),
         ];
@@ -133,7 +134,7 @@ impl PrinterState {
         }
 
         if !self.scanned {
-            col = col.push(text("스캔 중...").size(13).color(C_DIM));
+            col = col.push(text("스캔 중...").size(TYPE_BODY).color(C_DIM));
             return scrollable(container(col).padding([4, 0])).into();
         }
 
@@ -142,7 +143,7 @@ impl PrinterState {
 
         // 진단 — 가장 먼저 보여야 할 정보
         if !issues.is_empty() {
-            col = col.push(text("진단").size(14).color(C_DIM));
+            col = col.push(text("진단").size(TYPE_BODY).font(FONT_SEMIBOLD).color(C_DIM));
             col = col.push(Space::with_height(8));
             for i in issues {
                 col = col.push(issue_card(i, busy));
@@ -152,14 +153,14 @@ impl PrinterState {
         }
 
         // 등록된 큐
-        col = col.push(text("등록된 프린터").size(14).color(C_DIM));
+        col = col.push(text("등록된 프린터").size(TYPE_BODY).font(FONT_SEMIBOLD).color(C_DIM));
         col = col.push(Space::with_height(8));
         if self.scan.queues.is_empty() {
             col = col.push(card(column![
-                text("등록된 프린터 없음").size(12).color(C_DIM),
+                text("등록된 프린터 없음").size(TYPE_CAPTION).color(C_DIM),
                 Space::with_height(4),
                 text("아래 '감지된 장치'에서 [등록]을 누르면 기종에 맞는 드라이버를 골라 자동으로 추가합니다.")
-                    .size(10).color(C_DIM),
+                    .size(TYPE_CHIP).color(C_DIM),
             ]));
         } else {
             for q in &self.scan.queues {
@@ -177,7 +178,7 @@ impl PrinterState {
             .filter(|d| !self.scan.queues.iter().any(|q| q.uri == d.uri))
             .collect();
         if !unregistered.is_empty() {
-            col = col.push(text("감지된 장치 (미등록)").size(14).color(C_DIM));
+            col = col.push(text("감지된 장치 (미등록)").size(TYPE_BODY).font(FONT_SEMIBOLD).color(C_DIM));
             col = col.push(Space::with_height(8));
             for d in unregistered {
                 col = col.push(device_card(d, busy));
@@ -384,13 +385,13 @@ fn issue_card<'a>(i: Issue, busy: bool) -> Element<'a, PrinterMsg> {
 
     let mut body = column![
         row![
-            text(tag).size(11).color(c),
+            text(tag).size(TYPE_CAPTION).color(c),
             Space::with_width(8),
-            text(i.title).size(13),
+            text(i.title).size(TYPE_BODY),
         ]
         .align_y(iced::Alignment::Center),
         Space::with_height(6),
-        text(i.detail).size(11).color(C_DIM),
+        text(i.detail).size(TYPE_CAPTION).color(C_DIM),
     ];
 
     if let Some(q) = i.fix_queue {
@@ -420,33 +421,33 @@ fn queue_card<'a>(q: &'a Queue, scan: &'a Scan, busy: bool) -> Element<'a, Print
     };
 
     let mut head = row![
-        container(text(&q.name).size(13)).width(Length::Fill),
-        text(state_txt).size(11).color(state_col),
+        container(text(&q.name).size(TYPE_BODY)).width(Length::Fill),
+        text(state_txt).size(TYPE_CAPTION).color(state_col),
     ]
     .align_y(iced::Alignment::Center);
     if q.is_default {
         head = head.push(Space::with_width(8));
-        head = head.push(text("기본").size(10).color(C_BLUE));
+        head = head.push(text("기본").size(TYPE_CHIP).color(C_BLUE));
     }
 
     let mut body = column![
         head,
         Space::with_height(6),
-        text(format!("드라이버  {}", q.model)).size(11).color(C_DIM),
-        text(format!("연결  {}", short_uri(&q.uri))).size(11).color(C_DIM),
+        text(format!("드라이버  {}", q.model)).size(TYPE_CAPTION).color(C_DIM),
+        text(format!("연결  {}", short_uri(&q.uri))).size(TYPE_CAPTION).color(C_DIM),
     ];
 
     if !connected {
         body = body.push(Space::with_height(4));
         body = body.push(
             text("장치가 지금 안 보입니다 — 케이블이 빠졌거나 프린터가 꺼져 있습니다.")
-                .size(10)
+                .size(TYPE_CHIP)
                 .color(C_WARN),
         );
     }
     if q.jobs > 0 {
         body = body.push(Space::with_height(4));
-        body = body.push(text(format!("대기 작업 {}건", q.jobs)).size(10).color(C_WARN));
+        body = body.push(text(format!("대기 작업 {}건", q.jobs)).size(TYPE_CHIP).color(C_WARN));
     }
 
     body = body.push(Space::with_height(12));
@@ -491,10 +492,10 @@ fn device_card<'a>(d: &'a Device, busy: bool) -> Element<'a, PrinterMsg> {
     };
 
     let body = column![
-        text(&d.info).size(13),
+        text(&d.info).size(TYPE_BODY),
         Space::with_height(6),
-        text(format!("연결  {}", short_uri(&d.uri))).size(11).color(C_DIM),
-        text(format!("지원 언어  {lang_txt}")).size(11).color(C_DIM),
+        text(format!("연결  {}", short_uri(&d.uri))).size(TYPE_CAPTION).color(C_DIM),
+        text(format!("지원 언어  {lang_txt}")).size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(12),
         row![
             Space::with_width(Length::Fill),

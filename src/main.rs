@@ -1,6 +1,7 @@
 mod runner;
 mod ui;
 
+use crate::ui::ime::{TYPE_BODY, TYPE_CAPTION, TYPE_CHIP, FONT_SEMIBOLD, RADIUS_ROW};
 use iced::{
     widget::{button, column, container, row, scrollable, text, Space},
     Color, Element, Length, Subscription, Task,
@@ -102,15 +103,12 @@ fn main() -> iced::Result {
 
     iced::application("popmgr", update, view)
         .theme(|_| app_theme())
-        .font(include_bytes!("../assets/NanumGothic.ttf"))
-        .font(include_bytes!("../assets/NanumSquareR.ttf"))
-        .font(include_bytes!("../assets/NanumSquareB.ttf")) // 볼드 페이스 — cosmic-text는 합성 볼드 미지원
+        // EOND UI App 글꼴(Pretendard). 굵기마다 파일이 따로 있어야 한다 — cosmic-text 는 합성 볼드 미지원
+        .font(include_bytes!("../assets/Pretendard-Regular.otf"))
+        .font(include_bytes!("../assets/Pretendard-SemiBold.otf")) // 버튼 600
+        .font(include_bytes!("../assets/Pretendard-Bold.otf")) // 화면 제목 700
         .font(include_bytes!("../assets/DejaVuSans.ttf")) // ✓ ✗ ⚠ █ ░ 등 기호 폴백
-        // 기본 글자를 Bold 페이스로 — 라이트 테마에서 Regular는 가늘어 흐려 보임
-        .default_font(iced::Font {
-            weight: iced::font::Weight::Bold,
-            ..iced::Font::with_name("NanumSquare")
-        })
+        .default_font(ui::ime::FONT_BODY)
         .subscription(subscription)
         .window(iced::window::Settings {
             size: iced::Size::new(780.0, 680.0),
@@ -428,7 +426,7 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
         column![
             text("popmgr").size(22).color(C_TEXT),
             Space::with_height(2),
-            text("Pop!_OS 관리 도구").size(10).color(C_DIM),
+            text("Pop!_OS 관리 도구").size(TYPE_CHIP).color(C_DIM),
         ]
     )
     .padding(iced::Padding { top: 22.0, right: 18.0, bottom: 18.0, left: 18.0 });
@@ -445,8 +443,8 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
 
         let btn = button(
             column![
-                text(*label).size(14).color(tc),
-                text(*hint).size(10).color(hc),
+                text(*label).size(TYPE_BODY).font(FONT_SEMIBOLD).color(tc),
+                text(*hint).size(TYPE_CHIP).color(hc),
             ]
             .spacing(2)
         )
@@ -460,7 +458,7 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
             };
             iced::widget::button::Style {
                 background: Some(iced::Background::Color(bg)),
-                border: iced::Border { radius: 12.0.into(), ..Default::default() },
+                border: iced::Border { radius: RADIUS_ROW.into(), ..Default::default() },
                 text_color: tc,
                 ..Default::default()
             }
@@ -498,7 +496,7 @@ fn log_panel_view(output: &str) -> Element<'_, Message> {
         C_TEXT
     };
 
-    let copy_btn = button(text("복사").size(11).color(C_BLUE))
+    let copy_btn = button(text("복사").size(TYPE_CAPTION).color(C_BLUE))
         .on_press(Message::CopyLog)
         .padding([4, 12])
         .style(|_, status| {
@@ -508,14 +506,14 @@ fn log_panel_view(output: &str) -> Element<'_, Message> {
             };
             iced::widget::button::Style {
                 background: Some(iced::Background::Color(bg)),
-                border: iced::Border { radius: 8.0.into(), color: C_BORDER, width: 1.0 },
+                border: iced::Border { radius: RADIUS_ROW.into(), color: C_BORDER, width: 1.0 },
                 text_color: C_BLUE,
                 ..Default::default()
             }
         });
 
     let header = row![
-        text("로그").size(11).color(C_DIM),
+        text("로그").size(TYPE_CAPTION).color(C_DIM),
         Space::with_width(Length::Fill),
         copy_btn,
     ]
@@ -525,7 +523,7 @@ fn log_panel_view(output: &str) -> Element<'_, Message> {
         column![
             container(header).padding(iced::Padding { top: 4.0, right: 10.0, bottom: 2.0, left: 10.0 }),
             scrollable(
-                container(text(log_txt).size(12).color(log_col))
+                container(text(log_txt).size(TYPE_CAPTION).color(log_col))
                     .padding(iced::Padding { top: 0.0, right: 10.0, bottom: 6.0, left: 10.0 })
                     .width(Length::Fill)
             ).height(120),

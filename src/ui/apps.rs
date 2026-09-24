@@ -1,3 +1,4 @@
+use super::ime::{TYPE_SCREEN_TITLE, TYPE_BODY, TYPE_CAPTION, TYPE_CHIP, FONT_BOLD, FONT_SEMIBOLD, RADIUS_CHIP};
 use iced::{
     widget::{column, container, row, scrollable, text, text_input, Space},
     Color, Element, Length, Task,
@@ -1138,7 +1139,7 @@ EOF
     pub fn view(&self) -> Element<'_, AppsMsg> {
         let is_running = self.running.is_some();
         let mut col = column![
-            text("앱 관리").size(20),
+            text("앱 관리").size(TYPE_SCREEN_TITLE).font(FONT_BOLD),
             Space::with_height(16),
         ];
 
@@ -1163,14 +1164,14 @@ EOF
         col = col.push(Space::with_height(20));
 
         // 프로그램 제거 섹션
-        col = col.push(text("프로그램 제거").size(16));
+        col = col.push(text("프로그램 제거").size(eond_ui_theme::TYPE_DIALOG_TITLE).font(FONT_SEMIBOLD));
         col = col.push(Space::with_height(8));
         col = col.push(
             text_input("이름으로 검색...", &self.search)
                 .style(eond_ui_theme::iced_theme::text_input::default)
                 .on_input(AppsMsg::SearchChanged)
                 .padding([8, 10])
-                .size(13)
+                .size(TYPE_BODY)
         );
         col = col.push(Space::with_height(8));
 
@@ -1185,7 +1186,7 @@ EOF
                 .collect();
 
             if filtered.is_empty() {
-                col = col.push(text("검색 결과 없음").size(13).color(C_DIM));
+                col = col.push(text("검색 결과 없음").size(TYPE_BODY).color(C_DIM));
             } else {
                 let list = filtered.iter().fold(
                     column![].spacing(4),
@@ -1199,7 +1200,7 @@ EOF
             let remove_label = format!("선택 항목 제거 ({marked_count})");
             col = col.push(
                 row![
-                    text(format!("{marked_count}개 선택됨")).size(12).color(C_DIM),
+                    text(format!("{marked_count}개 선택됨")).size(TYPE_CAPTION).color(C_DIM),
                     Space::with_width(Length::Fill),
                     action_btn("새로고침", AppsMsg::Refresh, !is_running, C_BTN2),
                     Space::with_width(8),
@@ -1213,7 +1214,7 @@ EOF
                 .align_y(iced::Alignment::Center)
             );
         } else {
-            col = col.push(text("스캔 중...").size(13).color(C_DIM));
+            col = col.push(text("스캔 중...").size(TYPE_BODY).color(C_DIM));
         }
 
         scrollable(container(col).padding([4, 0])).into()
@@ -1233,36 +1234,36 @@ fn kakaotalk_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'stati
     let ime_patched = status.map(|s| s.kakaotalk_ime_patched).unwrap_or(false);
 
     let mut left = column![
-        text("KakaoTalk (Wine)").size(14).color(C_TEXT),
+        text("KakaoTalk (Wine)").size(TYPE_BODY).font(FONT_SEMIBOLD).color(C_TEXT),
         Space::with_height(3),
-        text("eondcom/kakaotalk-wine — Wine 기반 카카오톡 Linux 설치").size(11).color(C_DIM),
+        text("eondcom/kakaotalk-wine — Wine 기반 카카오톡 Linux 설치").size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(4),
-        text(status_txt).size(12).color(status_col),
+        text(status_txt).size(TYPE_CAPTION).color(status_col),
     ];
 
     if installed {
         if !launcher.is_empty() {
             left = left.push(Space::with_height(2));
-            left = left.push(text(format!("실행 스크립트: {launcher}")).size(11).color(C_DIM));
+            left = left.push(text(format!("실행 스크립트: {launcher}")).size(TYPE_CAPTION).color(C_DIM));
         }
         if !exe.is_empty() {
-            left = left.push(text(format!("KakaoTalk.exe: {exe}")).size(11).color(C_DIM));
+            left = left.push(text(format!("KakaoTalk.exe: {exe}")).size(TYPE_CAPTION).color(C_DIM));
         }
         if !desktop.is_empty() {
             let wm_state = if wmclass_ok { "(WMClass OK)" } else { "(WMClass 없음 — 독 아이콘 매칭 불가)" };
             let col_ = if wmclass_ok { C_DIM } else { C_WARN };
-            left = left.push(text(format!("바로가기: {desktop} {wm_state}")).size(11).color(col_));
+            left = left.push(text(format!("바로가기: {desktop} {wm_state}")).size(TYPE_CAPTION).color(col_));
         }
         let icon_state = if icon_ok { "● 아이콘 테마 등록됨" } else { "○ 아이콘 미등록 — 독 즐겨찾기 빈 칸" };
         let icon_c = if icon_ok { C_DIM } else { C_WARN };
-        left = left.push(text(icon_state).size(11).color(icon_c));
+        left = left.push(text(icon_state).size(TYPE_CAPTION).color(icon_c));
         let ime_state = if ime_patched { "● 한글 입력 안정화 적용됨 (popmgr-ime-fix-v1)" } else { "※ 한글 입력 가끔 안 됨 — IME 안정화 미적용" };
         let ime_c = if ime_patched { C_DIM } else { C_WARN };
-        left = left.push(text(ime_state).size(11).color(ime_c));
+        left = left.push(text(ime_state).size(TYPE_CAPTION).color(ime_c));
         left = left.push(Space::with_height(4));
         left = left.push(
             text("X 버튼은 종료가 아니라 트레이 숨김입니다 (COSMIC엔 Wine 트레이가 안 보임). 창이 사라졌으면 '창 보이기', 끝내려면 '완전 종료'.")
-                .size(10).color(C_DIM),
+                .size(TYPE_CHIP).color(C_DIM),
         );
     }
 
@@ -1284,7 +1285,7 @@ fn kakaotalk_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'stati
         right = right.push(action_btn("강제 kill", AppsMsg::ForceKillKakaotalk, !disabled, C_ERR));
     }
     if all_ok {
-        right = right.push(text("● 모든 설정 완료").size(11).color(C_OK));
+        right = right.push(text("● 모든 설정 완료").size(TYPE_CAPTION).color(C_OK));
     }
 
     card(
@@ -1326,38 +1327,38 @@ fn orca_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'static, Ap
     };
 
     let mut left = column![
-        text(title).size(14).color(C_TEXT),
+        text(title).size(TYPE_BODY).font(FONT_SEMIBOLD).color(C_TEXT),
         Space::with_height(3),
-        text("에이전트 개발용 IDE — 공식 .deb 를 받아 설치하고 런처·독까지 등록한다").size(11).color(C_DIM),
+        text("에이전트 개발용 IDE — 공식 .deb 를 받아 설치하고 런처·독까지 등록한다").size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(4),
-        text(status_txt).size(12).color(status_col),
+        text(status_txt).size(TYPE_CAPTION).color(status_col),
     ];
 
     if deb {
         left = left.push(Space::with_height(2));
-        left = left.push(text("업데이트·제거는 apt 로 관리됩니다 (stablyai/orca 공식 패키지)").size(11).color(C_DIM));
+        left = left.push(text("업데이트·제거는 apt 로 관리됩니다 (stablyai/orca 공식 패키지)").size(TYPE_CAPTION).color(C_DIM));
     } else if let Some(path) = &appimage {
         left = left.push(Space::with_height(2));
-        left = left.push(text(format!("AppImage: {path}")).size(11).color(C_DIM));
+        left = left.push(text(format!("AppImage: {path}")).size(TYPE_CAPTION).color(C_DIM));
     }
 
     if !desktop.is_empty() {
-        left = left.push(text(format!("바로가기: {desktop}")).size(11).color(C_DIM));
+        left = left.push(text(format!("바로가기: {desktop}")).size(TYPE_CAPTION).color(C_DIM));
     }
 
     let icon_state = if icon_ok { "● 아이콘 테마 등록됨" } else { "○ 아이콘 미등록 — 독 즐겨찾기 빈 칸" };
     let icon_c = if icon_ok { C_DIM } else { C_WARN };
-    left = left.push(text(icon_state).size(11).color(icon_c));
+    left = left.push(text(icon_state).size(TYPE_CAPTION).color(icon_c));
 
     let dock_state = if dock_ok { "● 독 즐겨찾기 등록됨" } else { "○ 독 미등록" };
     let dock_c = if dock_ok { C_DIM } else { C_WARN };
-    left = left.push(text(dock_state).size(11).color(dock_c));
+    left = left.push(text(dock_state).size(TYPE_CAPTION).color(dock_c));
 
     if registered {
         left = left.push(Space::with_height(4));
         left = left.push(
             text("터미널에서 'orca' 를 치면 GNOME 스크린리더가 실행됩니다 (이름 충돌). IDE 는 독 아이콘으로 여세요.")
-                .size(10).color(C_DIM),
+                .size(TYPE_CHIP).color(C_DIM),
         );
     }
 
@@ -1373,7 +1374,7 @@ fn orca_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'static, Ap
     let mut right = column![].spacing(6).align_x(iced::Alignment::End);
     right = right.push(action_btn(label, AppsMsg::InstallOrca, !disabled, C_OK));
     if all_ok {
-        right = right.push(text("● 모든 설정 완료").size(11).color(C_OK));
+        right = right.push(text("● 모든 설정 완료").size(TYPE_CAPTION).color(C_OK));
     }
 
     card(
@@ -1415,18 +1416,18 @@ fn recording_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'stati
         .map(|s| s.output_dir.display().to_string())
         .unwrap_or_else(|| recording_output_dir().display().to_string());
     let left = column![
-        text("화면 녹화 (GPU Screen Recorder · NVENC)").size(14).color(C_TEXT),
+        text("화면 녹화 (GPU Screen Recorder · NVENC)").size(TYPE_BODY).font(FONT_SEMIBOLD).color(C_TEXT),
         Space::with_height(3),
-        text(gsr_text).size(11).color(gsr_color),
-        text(format!("시스템 flathub 원격: {flathub}")).size(11).color(C_DIM),
+        text(gsr_text).size(TYPE_CAPTION).color(gsr_color),
+        text(format!("시스템 flathub 원격: {flathub}")).size(TYPE_CAPTION).color(C_DIM),
         text(format!("NVIDIA 런타임 {extension}: system {system_runtime} · user {user_runtime}"))
-            .size(11).color(C_DIM),
-        text(obs).size(11).color(C_DIM),
-        text(if active { "녹화: 진행 중" } else { "녹화: 정지" }).size(11)
+            .size(TYPE_CAPTION).color(C_DIM),
+        text(obs).size(TYPE_CAPTION).color(C_DIM),
+        text(if active { "녹화: 진행 중" } else { "녹화: 정지" }).size(TYPE_CAPTION)
             .color(if active { C_OK } else { C_DIM }),
-        text(format!("Ctrl+Shift+6: {shortcut} · 출력: {output}")).size(11).color(C_DIM),
+        text(format!("Ctrl+Shift+6: {shortcut} · 출력: {output}")).size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(3),
-        text("설치 시 시스템 인증(polkit) 창이 뜹니다.").size(10).color(C_WARN),
+        text("설치 시 시스템 인증(polkit) 창이 뜹니다.").size(TYPE_CHIP).color(C_WARN),
     ];
     let mut right = column![].spacing(6).align_x(iced::Alignment::End);
     right = right.push(action_btn("설치/런타임 맞추기", AppsMsg::InstallRecording, !disabled, C_OK));
@@ -1473,11 +1474,11 @@ fn mpv_card(status: Option<&AppsStatus>, disabled: bool) -> Element<'static, App
         None => "현재 기본 플레이어: 확인 불가".to_string(),
     };
     let left = column![
-        text("동영상 플레이어 (mpv · VA-API)").size(14).color(C_TEXT),
+        text("동영상 플레이어 (mpv · VA-API)").size(TYPE_BODY).font(FONT_SEMIBOLD).color(C_TEXT),
         Space::with_height(3),
-        text(status_text).size(12).color(status_color),
-        text(vaapi_text).size(11).color(vaapi_color),
-        text(default_text).size(11).color(C_DIM),
+        text(status_text).size(TYPE_CAPTION).color(status_color),
+        text(vaapi_text).size(TYPE_CAPTION).color(vaapi_color),
+        text(default_text).size(TYPE_CAPTION).color(C_DIM),
     ];
     let mut right = column![].spacing(6).align_x(iced::Alignment::End);
     if !installed {
@@ -1502,7 +1503,7 @@ fn pkg_row(idx: usize, pkg: &Package, disabled: bool) -> Element<'_, AppsMsg> {
     let check_txt = if pkg.marked { "●" } else { " " };
 
     let checkbox = container(
-        text(check_txt).size(12).color(Color::WHITE)
+        text(check_txt).size(TYPE_CAPTION).color(Color::WHITE)
     )
     .width(20).height(20)
     .style(move |_| iced::widget::container::Style {
@@ -1516,13 +1517,13 @@ fn pkg_row(idx: usize, pkg: &Package, disabled: bool) -> Element<'_, AppsMsg> {
         Space::with_width(10),
         column![
             row![
-                text(&pkg.name).size(13).color(C_TEXT),
+                text(&pkg.name).size(TYPE_BODY).color(C_TEXT),
                 Space::with_width(8),
-                text(kind_txt).size(10).color(kind_col),
+                text(kind_txt).size(TYPE_CHIP).color(kind_col),
                 Space::with_width(8),
-                text(&pkg.version).size(10).color(C_DIM),
+                text(&pkg.version).size(TYPE_CHIP).color(C_DIM),
             ].align_y(iced::Alignment::Center),
-            text(&pkg.description).size(11).color(C_DIM),
+            text(&pkg.description).size(TYPE_CAPTION).color(C_DIM),
         ].width(Length::Fill),
     ]
     .align_y(iced::Alignment::Center);
@@ -1534,7 +1535,7 @@ fn pkg_row(idx: usize, pkg: &Package, disabled: bool) -> Element<'_, AppsMsg> {
     .on_press_maybe(if !disabled { Some(AppsMsg::TogglePkg(idx)) } else { None })
     .style(move |_, _| iced::widget::button::Style {
         background: Some(iced::Background::Color(bg)),
-        border: iced::Border { radius: 7.0.into(), color: border, width: 1.0 },
+        border: iced::Border { radius: RADIUS_CHIP.into(), color: border, width: 1.0 },
         text_color: C_TEXT,
         ..Default::default()
     })

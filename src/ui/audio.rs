@@ -1,3 +1,4 @@
+use super::ime::{TYPE_SCREEN_TITLE, TYPE_BODY, TYPE_CAPTION, FONT_BOLD};
 use iced::{
     widget::{column, container, pick_list, row, scrollable, slider, text, Space},
     Element, Length, Task,
@@ -330,17 +331,17 @@ impl AudioState {
         let selected = opts.iter().find(|c| c.id == format!("{ctl}\t{cur}")).cloned();
         Some(card(
             column![
-                text("마이크 부스트 (아날로그 게인)").size(13).color(C_TEXT),
+                text("마이크 부스트 (아날로그 게인)").size(TYPE_BODY).color(C_TEXT),
                 Space::with_height(6),
                 row![
-                    container(text("부스트").size(12).color(C_DIM)).width(50),
+                    container(text("부스트").size(TYPE_CAPTION).color(C_DIM)).width(50),
                     pick_list(opts, selected, AudioMsg::PickBoost)
                         .text_size(12)
                         .width(Length::Fill),
                 ].align_y(iced::Alignment::Center),
                 Space::with_height(4),
                 text("녹음이 깨지거나 너무 크면 낮추고, 너무 작으면 한 단계씩 올리세요. (볼륨 슬라이더를 움직이면 부스트가 자동 재조정될 수 있음)")
-                    .size(11).color(C_DIM),
+                    .size(TYPE_CAPTION).color(C_DIM),
             ]
         ))
     }
@@ -820,10 +821,10 @@ impl AudioState {
         let is_running = self.running.is_some();
 
         let mut col = column![
-            text("오디오").size(20),
+            text("오디오").size(TYPE_SCREEN_TITLE).font(FONT_BOLD),
             Space::with_height(6),
             text("입력/출력 장치와 포트(스피커·헤드폰·핀마이크 등)를 선택하고 마이크를 검증합니다.")
-                .size(11)
+                .size(TYPE_CAPTION)
                 .color(C_DIM),
             Space::with_height(16),
         ];
@@ -833,7 +834,7 @@ impl AudioState {
         }
 
         if !self.scanned {
-            col = col.push(text("스캔 중...").size(13).color(C_DIM));
+            col = col.push(text("스캔 중...").size(TYPE_BODY).color(C_DIM));
             return scrollable(container(col).padding([4, 0])).into();
         }
 
@@ -916,7 +917,7 @@ impl AudioState {
         if !test_opts.is_empty() {
             col = col.push(
                 row![
-                    container(text("테스트 입력").size(12).color(C_DIM)).width(80),
+                    container(text("테스트 입력").size(TYPE_CAPTION).color(C_DIM)).width(80),
                     pick_list(test_opts, self.test_target.clone(), AudioMsg::PickTestTarget)
                         .text_size(12)
                         .width(Length::Fill),
@@ -965,12 +966,12 @@ fn device_card<'a>(
     hint: Option<&'a str>,
 ) -> Element<'a, AudioMsg> {
     let mut body = column![
-        text(title).size(13).color(C_TEXT),
+        text(title).size(TYPE_BODY).color(C_TEXT),
         Space::with_height(8),
     ];
 
     if devices.is_empty() {
-        body = body.push(text("장치 없음").size(12).color(C_DIM));
+        body = body.push(text("장치 없음").size(TYPE_CAPTION).color(C_DIM));
         return card(body);
     }
 
@@ -979,7 +980,7 @@ fn device_card<'a>(
     let dev_selected = default_dev.map(device_choice);
     body = body.push(
         row![
-            container(text("장치").size(12).color(C_DIM)).width(50),
+            container(text("장치").size(TYPE_CAPTION).color(C_DIM)).width(50),
             pick_list(dev_opts, dev_selected, pick_dev)
                 .text_size(12)
                 .width(Length::Fill),
@@ -997,7 +998,7 @@ fn device_card<'a>(
             body = body.push(Space::with_height(6));
             body = body.push(
                 row![
-                    container(text("포트").size(12).color(C_DIM)).width(50),
+                    container(text("포트").size(TYPE_CAPTION).color(C_DIM)).width(50),
                     pick_list(port_opts, port_selected, pick_port)
                         .text_size(12)
                         .width(Length::Fill),
@@ -1012,11 +1013,11 @@ fn device_card<'a>(
         body = body.push(Space::with_height(8));
         body = body.push(
             row![
-                container(text("볼륨").size(12).color(C_DIM)).width(50),
+                container(text("볼륨").size(TYPE_CAPTION).color(C_DIM)).width(50),
                 slider(0..=vol_max, vol, on_vol).on_release(vol_commit).width(Length::Fill),
                 Space::with_width(8),
                 container(
-                    text(format!("{vol}%")).size(12)
+                    text(format!("{vol}%")).size(TYPE_CAPTION)
                         .color(if dev.muted { C_ERR } else { C_TEXT })
                 ).width(40),
                 action_btn(mute_label, toggle_mute, true, mute_color),
@@ -1025,13 +1026,13 @@ fn device_card<'a>(
         );
         if dev.muted {
             body = body.push(Space::with_height(4));
-            body = body.push(text("현재 음소거 상태입니다.").size(11).color(C_ERR));
+            body = body.push(text("현재 음소거 상태입니다.").size(TYPE_CAPTION).color(C_ERR));
         }
     }
 
     if let Some(h) = hint {
         body = body.push(Space::with_height(8));
-        body = body.push(text(h).size(11).color(C_WARN));
+        body = body.push(text(h).size(TYPE_CAPTION).color(C_WARN));
     }
 
     card(body)
@@ -1039,7 +1040,7 @@ fn device_card<'a>(
 
 fn lock_card<'a>(lock: Option<&'a AudioLock>, is_busy: bool) -> Element<'a, AudioMsg> {
     let mut body = column![
-        text("입력 설정 고정 (잭 재연결 시 자동 복원)").size(13).color(C_TEXT),
+        text("입력 설정 고정 (잭 재연결 시 자동 복원)").size(TYPE_BODY).color(C_TEXT),
         Space::with_height(6),
     ];
     match lock {
@@ -1050,7 +1051,7 @@ fn lock_card<'a>(lock: Option<&'a AudioLock>, is_busy: bool) -> Element<'a, Audi
                         text(format!(
                             "● 고정됨: {} / 볼륨 {}% / 부스트 +{}dB",
                             port_label_kr(&l.port), l.volume_pct, l.boost_val * 10
-                        )).size(12).color(C_OK)
+                        )).size(TYPE_CAPTION).color(C_OK)
                     ).width(Length::Fill),
                     action_btn("고정 해제", AudioMsg::UnlockProfile, !is_busy, C_BTN2),
                 ].align_y(iced::Alignment::Center)
@@ -1058,7 +1059,7 @@ fn lock_card<'a>(lock: Option<&'a AudioLock>, is_busy: bool) -> Element<'a, Audi
             body = body.push(Space::with_height(4));
             body = body.push(
                 text("잭을 뺐다 꽂거나 시스템이 설정을 되돌려도 popmgr가 2초 안에 자동 복원합니다.")
-                    .size(11).color(C_DIM)
+                    .size(TYPE_CAPTION).color(C_DIM)
             );
         }
         None => {
@@ -1066,7 +1067,7 @@ fn lock_card<'a>(lock: Option<&'a AudioLock>, is_busy: bool) -> Element<'a, Audi
                 row![
                     container(
                         text("○ 고정 안 됨 — 잭을 다시 꽂으면 시스템이 내부 마이크로 되돌립니다")
-                            .size(12).color(C_DIM)
+                            .size(TYPE_CAPTION).color(C_DIM)
                     ).width(Length::Fill),
                     action_btn("현재 설정 고정", AudioMsg::LockProfile, !is_busy, C_BLUE),
                 ].align_y(iced::Alignment::Center)
@@ -1074,7 +1075,7 @@ fn lock_card<'a>(lock: Option<&'a AudioLock>, is_busy: bool) -> Element<'a, Audi
             body = body.push(Space::with_height(4));
             body = body.push(
                 text("핀마이크가 잘 되는 상태에서 누르세요. 포트/볼륨/부스트가 저장됩니다.")
-                    .size(11).color(C_DIM)
+                    .size(TYPE_CAPTION).color(C_DIM)
             );
         }
     }
@@ -1083,14 +1084,14 @@ fn lock_card<'a>(lock: Option<&'a AudioLock>, is_busy: bool) -> Element<'a, Audi
 
 fn profile_card<'a>(profile: Option<&'a AudioProfile>, is_busy: bool) -> Element<'a, AudioMsg> {
     let mut body = column![
-        text("오디오 설정 저장 / 불러오기").size(13).color(C_TEXT),
+        text("오디오 설정 저장 / 불러오기").size(TYPE_BODY).color(C_TEXT),
         Space::with_height(6),
     ];
     match profile {
         Some(p) => {
             body = body.push(
                 row![
-                    container(text(format!("● 저장됨 ({})", p.saved_at)).size(12).color(C_OK))
+                    container(text(format!("● 저장됨 ({})", p.saved_at)).size(TYPE_CAPTION).color(C_OK))
                         .width(Length::Fill),
                     action_btn("불러오기", AudioMsg::LoadProfile, !is_busy, C_BLUE),
                     Space::with_width(8),
@@ -1098,19 +1099,19 @@ fn profile_card<'a>(profile: Option<&'a AudioProfile>, is_busy: bool) -> Element
                 ].align_y(iced::Alignment::Center)
             );
             body = body.push(Space::with_height(6));
-            body = body.push(text(profile_summary(p)).size(11).color(C_DIM));
+            body = body.push(text(profile_summary(p)).size(TYPE_CAPTION).color(C_DIM));
         }
         None => {
             body = body.push(
                 row![
-                    container(text("○ 저장된 설정 없음").size(12).color(C_DIM)).width(Length::Fill),
+                    container(text("○ 저장된 설정 없음").size(TYPE_CAPTION).color(C_DIM)).width(Length::Fill),
                     action_btn("현재 설정 저장", AudioMsg::SaveProfile, !is_busy, C_BLUE),
                 ].align_y(iced::Alignment::Center)
             );
             body = body.push(Space::with_height(4));
             body = body.push(
                 text("지금의 출력/입력 장치·포트·볼륨·마이크 부스트·노이즈 억제 상태를 저장해 두고, 나중에 '불러오기'로 한 번에 복원합니다.")
-                    .size(11).color(C_DIM)
+                    .size(TYPE_CAPTION).color(C_DIM)
             );
         }
     }
@@ -1127,15 +1128,15 @@ fn denoise_card<'a>(on: bool, is_busy: bool) -> Element<'a, AudioMsg> {
     let btn_color = if on { C_BTN2 } else { C_GREEN };
     card(
         column![
-            text("노이즈 억제 (주변/바닥 잡음 제거)").size(13).color(C_TEXT),
+            text("노이즈 억제 (주변/바닥 잡음 제거)").size(TYPE_BODY).color(C_TEXT),
             Space::with_height(6),
             row![
-                container(text(format!("{mark} {state}")).size(12).color(scol)).width(Length::Fill),
+                container(text(format!("{mark} {state}")).size(TYPE_CAPTION).color(scol)).width(Length::Fill),
                 action_btn(btn_label, AudioMsg::ToggleDenoise, !is_busy, btn_color),
             ].align_y(iced::Alignment::Center),
             Space::with_height(4),
             text("WebRTC 잡음 억제 필터를 마이크 앞단에 끼웁니다. 녹음/방송 앱(OBS 등)은 자동으로 이 필터를 거칩니다.")
-                .size(11).color(C_DIM),
+                .size(TYPE_CAPTION).color(C_DIM),
         ]
     )
 }
@@ -1148,21 +1149,21 @@ fn vref_card(v: &VrefInfo, is_busy: bool) -> Element<'_, AudioMsg> {
     };
 
     let mut body = column![
-        text("핀마이크 전원 (잭 마이크 바이어스)").size(13).color(C_TEXT),
+        text("핀마이크 전원 (잭 마이크 바이어스)").size(TYPE_BODY).color(C_TEXT),
         Space::with_height(8),
         row![
-            text(format!("{mark} {state}")).size(12).color(scol),
+            text(format!("{mark} {state}")).size(TYPE_CAPTION).color(scol),
         ],
         Space::with_height(4),
         text(format!("코덱 핀 0x{:x} · {}", v.nid, if v.boot_patch { "부팅 패치 설치됨 (재부팅에도 유지)" } else { "부팅 패치 없음 (재부팅/절전 후 다시 켜야 함)" }))
-            .size(11).color(C_DIM),
+            .size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(8),
     ];
 
     if v.nopass {
         body = body.push(
             text("비번 없는 자동 제어 활성 — 꺼지면 popmgr가 자동으로 다시 켭니다.")
-                .size(11).color(C_OK)
+                .size(TYPE_CAPTION).color(C_OK)
         );
         body = body.push(Space::with_height(6));
     }
@@ -1188,11 +1189,11 @@ fn vref_card(v: &VrefInfo, is_busy: bool) -> Element<'_, AudioMsg> {
 
 fn jack_card(jacks: &[(String, bool)]) -> Element<'_, AudioMsg> {
     let mut body = column![
-        text("3.5mm 잭 감지 (하드웨어)").size(13).color(C_TEXT),
+        text("3.5mm 잭 감지 (하드웨어)").size(TYPE_BODY).color(C_TEXT),
         Space::with_height(8),
     ];
     if jacks.is_empty() {
-        body = body.push(text("잭 감지 정보 없음").size(12).color(C_DIM));
+        body = body.push(text("잭 감지 정보 없음").size(TYPE_CAPTION).color(C_DIM));
     } else {
         for (name, on) in jacks {
             let (mark, state, scol) = if *on {
@@ -1202,8 +1203,8 @@ fn jack_card(jacks: &[(String, bool)]) -> Element<'_, AudioMsg> {
             };
             body = body.push(
                 row![
-                    container(text(jack_label(name)).size(12)).width(180),
-                    text(format!("{mark} {state}")).size(12).color(scol),
+                    container(text(jack_label(name)).size(TYPE_CAPTION)).width(180),
+                    text(format!("{mark} {state}")).size(TYPE_CAPTION).color(scol),
                 ]
                 .align_y(iced::Alignment::Center)
             );
@@ -1320,22 +1321,22 @@ fn test_result_card<'a>(test: &'a MicTest, label: &'a str) -> Element<'a, AudioM
         Space::with_height(0).into()
     } else {
         column![
-            text(format!("대상: {label}")).size(11).color(C_DIM),
+            text(format!("대상: {label}")).size(TYPE_CAPTION).color(C_DIM),
             Space::with_height(4),
         ].into()
     };
     match test {
         MicTest::None => card(
-            text("테스트 버튼을 눌러 마이크 입력을 확인하세요.").size(12).color(C_DIM)
+            text("테스트 버튼을 눌러 마이크 입력을 확인하세요.").size(TYPE_CAPTION).color(C_DIM)
         ),
         MicTest::Recording => card(
-            text("녹음 중...").size(12).color(C_WARN)
+            text("녹음 중...").size(TYPE_CAPTION).color(C_WARN)
         ),
         MicTest::Failed(e) => card(
             column![
-                text("[실패]").size(13).color(C_ERR),
+                text("[실패]").size(TYPE_BODY).color(C_ERR),
                 Space::with_height(4),
-                text(e).size(11).color(C_DIM),
+                text(e).size(TYPE_CAPTION).color(C_DIM),
             ]
         ),
         MicTest::Loop { snr_db, peak_pct, rms_pct } => {
@@ -1351,12 +1352,12 @@ fn test_result_card<'a>(test: &'a MicTest, label: &'a str) -> Element<'a, AudioM
                 column![
                     target_line,
                     row![
-                        text("루프 테스트: ").size(13),
-                        text(verdict).size(13).color(vcol),
+                        text("루프 테스트: ").size(TYPE_BODY),
+                        text(verdict).size(TYPE_BODY).color(vcol),
                     ],
                     Space::with_height(8),
                     text(format!("톤 SNR: {snr_db:.1} dB   Peak: {peak_pct:.1}%   RMS: {rms_pct:.2}%{clip}"))
-                        .size(11).color(if *peak_pct >= 99.0 { C_WARN } else { C_DIM }),
+                        .size(TYPE_CAPTION).color(if *peak_pct >= 99.0 { C_WARN } else { C_DIM }),
                 ]
             )
         }
@@ -1372,14 +1373,14 @@ fn test_result_card<'a>(test: &'a MicTest, label: &'a str) -> Element<'a, AudioM
                 column![
                     target_line,
                     row![
-                        text("결과: ").size(13),
-                        text(verdict).size(13).color(vcol),
+                        text("결과: ").size(TYPE_BODY),
+                        text(verdict).size(TYPE_BODY).color(vcol),
                     ],
                     Space::with_height(8),
                     text(format!("Peak: {:.1}%   RMS: {:.2}%   샘플: {}", peak_pct, rms_pct, samples))
-                        .size(11).color(C_DIM),
+                        .size(TYPE_CAPTION).color(C_DIM),
                     Space::with_height(4),
-                    text(level_bar(*peak_pct)).size(12).color(vcol),
+                    text(level_bar(*peak_pct)).size(TYPE_CAPTION).color(vcol),
                 ]
             )
         }

@@ -370,10 +370,10 @@ impl ImeState {
         let is_running = self.running.is_some();
 
         let mut col = column![
-            text("한글 입력기 (IME)").size(20),
+            text("한글 입력기 (IME)").size(TYPE_SCREEN_TITLE).font(FONT_BOLD),
             Space::with_height(6),
             text("참고: cosmic-os-korean 패치 권장 — COSMIC에서는 kime가 가장 안정적입니다.")
-                .size(11)
+                .size(TYPE_CAPTION)
                 .color(C_DIM),
             Space::with_height(16),
         ];
@@ -401,14 +401,14 @@ impl ImeState {
             col = col.push(Space::with_height(12));
             let env_txt = if st.env_match { "[OK] /etc/environment 일치" } else { "[!] /etc/environment 불일치" };
             let env_col = if st.env_match { C_OK } else { C_ERR };
-            col = col.push(text(env_txt).size(12).color(env_col));
+            col = col.push(text(env_txt).size(TYPE_CAPTION).color(env_col));
             col = col.push(Space::with_height(4));
             let daemon_txt = match &st.daemon_running {
                 Some(k) => format!("[실행] {} 데몬 실행 중", k.label()),
                 None    => "[중지] 데몬 미실행".into(),
             };
             let daemon_col = if st.daemon_running.is_some() { C_OK } else { C_WARN };
-            col = col.push(text(daemon_txt).size(12).color(daemon_col));
+            col = col.push(text(daemon_txt).size(TYPE_CAPTION).color(daemon_col));
 
             // ── fcitx5 전용 진단 ──────────────────────────────
             if !st.fcitx5_dup_launchers.is_empty() || st.fcitx5_instances > 1 {
@@ -551,8 +551,8 @@ fn ime_row(kind: ImeKind, installed: bool, selected: bool, disabled: bool) -> El
         radio,
         Space::with_width(10),
         column![
-            text(label_str).size(14).color(if selected { C_BLUE } else { C_TEXT }),
-            text(status_txt).size(11).color(status_col),
+            text(label_str).size(TYPE_BODY).font(FONT_SEMIBOLD).color(if selected { C_BLUE } else { C_TEXT }),
+            text(status_txt).size(TYPE_CAPTION).color(status_col),
         ],
         Space::with_width(Length::Fill),
         install_btn,
@@ -566,7 +566,7 @@ fn ime_row(kind: ImeKind, installed: bool, selected: bool, disabled: bool) -> El
     .on_press(select_msg)
     .style(move |_, _| iced::widget::button::Style {
         background: Some(iced::Background::Color(sel_color)),
-        border: iced::Border { radius: 12.0.into(), color: border_color, width: if selected { 1.5 } else { 1.0 } },
+        border: iced::Border { radius: RADIUS_CARD.into(), color: border_color, width: if selected { 1.5 } else { 1.0 } },
         text_color: C_TEXT,
         ..Default::default()
     })
@@ -1208,18 +1208,18 @@ fn fcitx5_behavior_card(beh: &Fcitx5Behavior, disabled: bool) -> Element<'static
     let title_col = if ok { C_OK } else { C_WARN };
 
     let mut body = column![
-        text(title).size(13).color(title_col),
+        text(title).size(TYPE_BODY).color(title_col),
         Space::with_height(4),
     ];
     if ok {
         body = body.push(
             text("모든 창이 한/영 상태를 공유하고 새 창은 한글로 시작합니다. 왼쪽 Shift 단독 탭 영문 전환은 꺼져 있습니다.")
-                .size(11).color(C_DIM),
+                .size(TYPE_CAPTION).color(C_DIM),
         );
     } else {
         body = body.push(
             text("fcitx5 기본값은 창마다 한/영 상태를 따로 기억하고 새 창을 영문으로 시작합니다. 다른 창에 갔다 오거나 데몬이 재시작되면 영문만 입력되는 원인입니다.")
-                .size(11).color(C_DIM),
+                .size(TYPE_CAPTION).color(C_DIM),
         );
         body = body.push(Space::with_height(6));
         let mark = |good: bool| if good { "[OK]" } else { "[!]" };
@@ -1230,12 +1230,12 @@ fn fcitx5_behavior_card(beh: &Fcitx5Behavior, disabled: bool) -> Element<'static
                 mark(beh.active_by_default), if beh.active_by_default { "True" } else { "False" },
                 mark(!beh.shift_alt_trigger),
             ))
-            .size(11).color(C_WARN),
+            .size(TYPE_CAPTION).color(C_WARN),
         );
         body = body.push(Space::with_height(6));
         body = body.push(
             text("~/.config/fcitx5/config 를 고치고 재시작 없이 즉시 반영합니다 (fcitx5-remote -r).")
-                .size(11).color(C_DIM),
+                .size(TYPE_CAPTION).color(C_DIM),
         );
         body = body.push(Space::with_height(8));
         body = body.push(row![
@@ -1252,7 +1252,7 @@ fn fcitx5_behavior_card(beh: &Fcitx5Behavior, disabled: bool) -> Element<'static
                 else  { C_WARN_BG }
             )),
             border: iced::Border {
-                radius: 8.0.into(),
+                radius: RADIUS_ROW.into(),
                 color: if ok { C_OK } else { C_WARN },
                 width: 1.0,
             },
@@ -1270,12 +1270,12 @@ fn fcitx5_frontend_card(missing: &[&'static str], disabled: bool) -> Element<'st
         format!("- {pkg}  ({desc})")
     }).collect::<Vec<_>>().join("\n");
     let body = column![
-        text("[!] fcitx5 툴킷 프론트엔드(IM 모듈) 미설치").size(13).color(C_WARN),
+        text("[!] fcitx5 툴킷 프론트엔드(IM 모듈) 미설치").size(TYPE_BODY).color(C_WARN),
         Space::with_height(4),
         text("GTK_IM_MODULE/QT_IM_MODULE=fcitx 로 지정돼 있지만 해당 툴킷의 fcitx5 모듈이 없어, 그 툴킷으로 만든 앱에서는 한글 입력이 안 되거나 불안정합니다.")
-            .size(11).color(C_DIM),
+            .size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(6),
-        text(items).size(11).color(C_WARN),
+        text(items).size(TYPE_CAPTION).color(C_WARN),
         Space::with_height(8),
         row![
             Space::with_width(Length::Fill),
@@ -1287,7 +1287,7 @@ fn fcitx5_frontend_card(missing: &[&'static str], disabled: bool) -> Element<'st
         .padding([12, 14])
         .style(|_| iced::widget::container::Style {
             background: Some(iced::Background::Color(C_WARN_BG)),
-            border: iced::Border { radius: 8.0.into(), color: C_WARN, width: 1.0 },
+            border: iced::Border { radius: RADIUS_ROW.into(), color: C_WARN, width: 1.0 },
             ..Default::default()
         })
         .into()
@@ -1955,16 +1955,16 @@ fn shell_conflict_card<'a>(
     disabled: bool,
 ) -> Element<'a, ImeMsg> {
     let mut col = column![
-        text("[!] 셸 init 파일이 활성 IME와 충돌").size(13).color(C_ERR),
+        text("[!] 셸 init 파일이 활성 IME와 충돌").size(TYPE_BODY).color(C_ERR),
         Space::with_height(4),
         text("아래 파일들이 활성 IME와 다른 값을 강제 export 합니다. 새 셸을 열면 한글 입력이 깨질 수 있습니다.")
-            .size(11).color(C_DIM),
+            .size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(8),
     ];
     for c in conflicts {
-        col = col.push(text(format!("· {}", c.path)).size(12).color(C_TEXT));
+        col = col.push(text(format!("· {}", c.path)).size(TYPE_CAPTION).color(C_TEXT));
         for line in &c.lines {
-            col = col.push(text(format!("    {}", line)).size(10).color(C_DIM));
+            col = col.push(text(format!("    {}", line)).size(TYPE_CHIP).color(C_DIM));
         }
     }
     col = col.push(Space::with_height(8));
@@ -1979,7 +1979,7 @@ fn shell_conflict_card<'a>(
         .padding([12, 14])
         .style(|_| iced::widget::container::Style {
             background: Some(iced::Background::Color(C_ERR_BG)),
-            border: iced::Border { radius: 8.0.into(), color: C_ERR, width: 1.0 },
+            border: iced::Border { radius: RADIUS_ROW.into(), color: C_ERR, width: 1.0 },
             ..Default::default()
         })
         .into()
@@ -1987,21 +1987,21 @@ fn shell_conflict_card<'a>(
 
 fn fcitx5_dup_card(launchers: &[String], instances: usize, disabled: bool) -> Element<'static, ImeMsg> {
     let mut body = column![
-        text("[!] fcitx5 가 두 번 실행됨 — 창에 따라 한글이 안 되는 원인").size(13).color(C_ERR),
+        text("[!] fcitx5 가 두 번 실행됨 — 창에 따라 한글이 안 되는 원인").size(TYPE_BODY).color(C_ERR),
         Space::with_height(4),
         text(
             "로그인할 때 fcitx5 가 두 경로로 떠서 서로 경쟁합니다. 순서가 꼬이면 살아남은 fcitx5 가 \
              Wayland 입력 연결을 못 잡아, 그 세션 내내 COSMIC 앱·Chrome·Electron 에서만 영문만 입력됩니다\n\
              (GTK 앱·카카오톡은 정상이라 '창마다 다르게' 보임). systemd 유닛 하나만 남기면 해결됩니다."
-        ).size(11).color(C_DIM),
+        ).size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(6),
     ];
     if instances > 1 {
-        body = body.push(text(format!("지금 fcitx5 프로세스 {instances}개")).size(11).color(C_WARN));
+        body = body.push(text(format!("지금 fcitx5 프로세스 {instances}개")).size(TYPE_CAPTION).color(C_WARN));
     }
     if !launchers.is_empty() {
         body = body.push(
-            text(format!("중복 자동실행: {} (+ {FCITX5_UNIT})", launchers.join(", "))).size(11).color(C_WARN),
+            text(format!("중복 자동실행: {} (+ {FCITX5_UNIT})", launchers.join(", "))).size(TYPE_CAPTION).color(C_WARN),
         );
         body = body.push(Space::with_height(8));
         body = body.push(row![
@@ -2010,7 +2010,7 @@ fn fcitx5_dup_card(launchers: &[String], instances: usize, disabled: bool) -> El
         ]);
     } else {
         body = body.push(
-            text("자동실행 중복은 이미 꺼져 있습니다. 로그아웃 후 다시 로그인하면 하나만 뜹니다.").size(11).color(C_DIM),
+            text("자동실행 중복은 이미 꺼져 있습니다. 로그아웃 후 다시 로그인하면 하나만 뜹니다.").size(TYPE_CAPTION).color(C_DIM),
         );
     }
     card(body)
@@ -2038,9 +2038,9 @@ fn resume_hook_card(installed: bool, disabled: bool) -> Element<'static, ImeMsg>
     };
 
     let body = column![
-        text(title).size(13).color(title_col),
+        text(title).size(TYPE_BODY).color(title_col),
         Space::with_height(4),
-        text(desc).size(11).color(C_DIM),
+        text(desc).size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(8),
         row![
             Space::with_width(Length::Fill),
@@ -2056,7 +2056,7 @@ fn resume_hook_card(installed: bool, disabled: bool) -> Element<'static, ImeMsg>
                 else         { C_WARN_BG }
             )),
             border: iced::Border {
-                radius: 8.0.into(),
+                radius: RADIUS_ROW.into(),
                 color: if installed { C_OK } else { C_WARN },
                 width: 1.0,
             },
@@ -2098,9 +2098,9 @@ fn libreoffice_ime_card(st: &ImeStatus, disabled: bool) -> Element<'static, ImeM
     };
 
     let body = column![
-        text(title).size(13).color(title_col),
+        text(title).size(TYPE_BODY).color(title_col),
         Space::with_height(4),
-        text(desc).size(11).color(C_DIM),
+        text(desc).size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(8),
         row![
             Space::with_width(Length::Fill),
@@ -2120,7 +2120,7 @@ fn libreoffice_ime_card(st: &ImeStatus, disabled: bool) -> Element<'static, ImeM
                     C_SEL_BG
                 }
             )),
-            border: iced::Border { radius: 8.0.into(), color: title_col, width: 1.0 },
+            border: iced::Border { radius: RADIUS_ROW.into(), color: title_col, width: 1.0 },
             ..Default::default()
         })
         .into()
@@ -2128,22 +2128,22 @@ fn libreoffice_ime_card(st: &ImeStatus, disabled: bool) -> Element<'static, ImeM
 
 fn snap_leak_card(leak: &str) -> Element<'static, ImeMsg> {
     let body = column![
-        text("[!] GTK_IM_MODULE_FILE 누출 감지").size(13).color(C_WARN),
+        text("[!] GTK_IM_MODULE_FILE 누출 감지").size(TYPE_BODY).color(C_WARN),
         Space::with_height(4),
         text("현재 셸/세션의 환경변수가 snap 캐시를 가리키고 있습니다. 이 변수가 IntelliJ 등 자식 프로세스로 전파되면 시스템 GTK IM 모듈을 못 찾아 한글 입력이 깨집니다.")
-            .size(11).color(C_DIM),
+            .size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(6),
-        text(format!("값: {}", leak)).size(10).color(C_WARN),
+        text(format!("값: {}", leak)).size(TYPE_CHIP).color(C_WARN),
         Space::with_height(6),
         text("해결: 셸에서 `unset GTK_IM_MODULE_FILE` 후 IDE 재실행. 영구 해결은 snap 앱을 데스크탑 세션 환경 밖(예: 별도 터미널)에서 띄우거나 제거.")
-            .size(11).color(C_DIM),
+            .size(TYPE_CAPTION).color(C_DIM),
     ];
     container(body)
         .width(Length::Fill)
         .padding([12, 14])
         .style(|_| iced::widget::container::Style {
             background: Some(iced::Background::Color(C_WARN_BG)),
-            border: iced::Border { radius: 8.0.into(), color: C_WARN, width: 1.0 },
+            border: iced::Border { radius: RADIUS_ROW.into(), color: C_WARN, width: 1.0 },
             ..Default::default()
         })
         .into()
@@ -2154,10 +2154,10 @@ fn jetbrains_card<'a>(
     disabled: bool,
 ) -> Element<'a, ImeMsg> {
     let mut col = column![
-        text("[i] JetBrains IDE 한글 입력 최적화").size(13).color(C_BLUE),
+        text("[i] JetBrains IDE 한글 입력 최적화").size(TYPE_BODY).color(C_BLUE),
         Space::with_height(4),
         text("아래 IDE vmoptions에 XIM 안정화 옵션이 빠져 있습니다. JBR이 native Wayland 대신 X11 XIM을 거치게 하면 fcitx/ibus와의 freeze가 줄어듭니다.")
-            .size(11).color(C_DIM),
+            .size(TYPE_CAPTION).color(C_DIM),
         Space::with_height(8),
     ];
     for ide in ides {
@@ -2169,9 +2169,9 @@ fn jetbrains_card<'a>(
         let status_col = if flags.is_empty() { C_OK } else { C_WARN };
         col = col.push(
             row![
-                text(format!("· {}", ide.name)).size(12).color(C_TEXT),
+                text(format!("· {}", ide.name)).size(TYPE_CAPTION).color(C_TEXT),
                 Space::with_width(Length::Fill),
-                text(status).size(11).color(status_col),
+                text(status).size(TYPE_CAPTION).color(status_col),
             ]
         );
     }
@@ -2187,7 +2187,7 @@ fn jetbrains_card<'a>(
         .padding([12, 14])
         .style(|_| iced::widget::container::Style {
             background: Some(iced::Background::Color(C_SEL_BG)),
-            border: iced::Border { radius: 8.0.into(), color: C_BLUE, width: 1.0 },
+            border: iced::Border { radius: RADIUS_ROW.into(), color: C_BLUE, width: 1.0 },
             ..Default::default()
         })
         .into()
@@ -2226,67 +2226,79 @@ pub const C_TEXT2:      Color = P.fg2.to_iced();           // 비활성 메뉴 �
 pub const C_PURPLE:     Color = P.purple_fg.to_iced();     // Flatpak
 pub const C_HOVER:      Color = Rgba { a: 15, ..P.fg }.over(P.c1).to_iced();  // 호버(6%)
 pub const C_HOVER_WEAK: Color = Rgba { a: 8, ..P.fg }.over(P.c1).to_iced();
-pub const C_ON_LIGHT:   Color = palette(Mode::Light, THEME_ACCENT).fg.to_iced(); // 밝은 바탕 위 글자(모드 무관)
 
+// EOND UI App 글꼴·크기 토큰 (ui.eond.com/app). 본문 400, 버튼·카드 제목 600, 화면 제목 700.
+pub const FONT_BODY: iced::Font = iced::Font::with_name("Pretendard");
+pub const FONT_SEMIBOLD: iced::Font = iced::Font { weight: iced::font::Weight::Semibold, ..FONT_BODY };
+pub const FONT_BOLD: iced::Font = iced::Font { weight: iced::font::Weight::Bold, ..FONT_BODY };
+pub use eond_ui_theme::{
+    RADIUS_CARD, RADIUS_CHIP, RADIUS_ROW, TYPE_BODY, TYPE_CAPTION, TYPE_CHIP, TYPE_SCREEN_TITLE,
+};
+use eond_ui_theme::iced_theme as eui;
+
+type BtnStyle = fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style;
+
+/// 주의(노랑) 버튼 — 디자인 시스템에 없어서 danger 모양에 warning 색만 바꿔 쓴다.
+fn warn_btn(t: &iced::Theme, s: iced::widget::button::Status) -> iced::widget::button::Style {
+    use iced::widget::button::Status;
+    let base = eui::button::danger(t, s);
+    let fill = match s {
+        Status::Hovered | Status::Pressed => Rgba { a: (P.warning_flat.a as f32 * 1.45).min(255.0) as u8, ..P.warning_flat },
+        _ => P.warning_flat,
+    };
+    let text = if matches!(s, Status::Disabled) { Rgba { a: 128, ..P.warning_fg } } else { P.warning_fg };
+    iced::widget::button::Style {
+        background: Some(iced::Background::Color(fill.over(P.c1).to_iced())),
+        text_color: text.to_iced(),
+        ..base
+    }
+}
+
+/// 호출부가 넘기던 색을 디자인 시스템 버튼 종류로 옮긴다.
+/// 파랑=주 동작(solid), 빨강=삭제(danger), 초록=켜기(success), 노랑=주의, 그 밖(회색)=보통(neutral).
+fn btn_style(color: Color) -> BtnStyle {
+    if color == C_BLUE {
+        eui::button::solid
+    } else if color == C_ERR {
+        eui::button::danger
+    } else if color == C_OK {
+        eui::button::success
+    } else if color == C_WARN {
+        warn_btn
+    } else {
+        eui::button::neutral
+    }
+}
+
+/// 높이 36 = 13px 글자 + 위아래 9, 좌우 16 (EOND UI App 버튼).
 pub fn action_btn<'a, M: Clone + 'a>(label: impl Into<String>, msg: M, enabled: bool, color: Color) -> Element<'a, M> {
-    let bg = if enabled { color } else { C_BTN2 };
-    // 배경 휘도에 따라 글자색 자동 선택(라이트 보조버튼=어두운 글자, 컬러 버튼=흰 글자).
-    let on = |c: Color| if luminance(c) > 0.62 { C_ON_LIGHT } else { Color::WHITE };
-    let tc = if enabled { on(bg) } else { C_DIM };
-    let b = button(text(label.into()).size(13).color(tc))
-        .padding([11, 22])
-        .style(move |_, status| {
-            let bg = match status {
-                iced::widget::button::Status::Hovered if enabled => shade(bg, 0.05),
-                _ => bg,
-            };
-            iced::widget::button::Style {
-                background: Some(iced::Background::Color(bg)),
-                border: iced::Border { radius: 12.0.into(), ..Default::default() },
-                text_color: tc,
-                ..Default::default()
-            }
-        });
+    let b = button(text(label.into()).size(eond_ui_theme::TYPE_BUTTON).font(FONT_SEMIBOLD))
+        .padding([9, 16])
+        .style(btn_style(color));
     if enabled { b.on_press(msg).into() } else { b.into() }
 }
 
 pub fn running_bar<'a, M: 'a>(label: &'a str) -> Element<'a, M> {
     container(
-        text(label).size(12).color(C_WARN_FG)
+        text(label).size(TYPE_CAPTION).color(C_WARN_FG)
     )
-    .padding([11, 16])
+    .padding([9, 14])
     .width(Length::Fill)
     .style(|_| iced::widget::container::Style {
         background: Some(iced::Background::Color(C_WARN_BG)),
-        border: iced::Border { radius: 12.0.into(), color: C_WARN_LINE, width: 1.0 },
+        border: iced::Border { radius: RADIUS_ROW.into(), color: C_WARN_LINE, width: 1.0 },
         ..Default::default()
     })
     .into()
 }
 
+/// 카드 (c1, 모서리 14, 안쪽 여백 14) — eui::container::card 그대로.
 pub fn card<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
     container(content)
         .width(Length::Fill)
-        .padding([18, 20])
-        .style(|_| iced::widget::container::Style {
-            background: Some(iced::Background::Color(C_SURFACE)),
-            border: iced::Border { radius: 18.0.into(), color: C_BORDER, width: 1.0 },
-            shadow: iced::Shadow {
-                color: Color { r: 0.06, g: 0.10, b: 0.16, a: 0.06 },
-                offset: iced::Vector::new(0.0, 2.0),
-                blur_radius: 16.0,
-            },
-            ..Default::default()
-        })
+        .padding(14)
+        .style(eui::container::card)
         .into()
-}
-
-/// 상대 휘도(글자 대비 판단용).
-pub fn luminance(c: Color) -> f32 { 0.299 * c.r + 0.587 * c.g + 0.114 * c.b }
-
-/// amt 만큼 어둡게(양수) — hover 강조용. 밝은 버튼은 어둡게, 그게 라이트 UI 관습.
-pub fn shade(c: Color, amt: f32) -> Color {
-    Color { r: (c.r - amt).max(0.0), g: (c.g - amt).max(0.0), b: (c.b - amt).max(0.0), a: c.a }
 }
 
 #[cfg(test)]
