@@ -28,8 +28,10 @@ Pop!_OS / COSMIC 데스크톱 관리 도구 — Rust + [Iced](https://github.com
 - **LibreOffice 한글 입력 호환 모드**: COSMIC Wayland에서 LibreOffice가 fcitx 입력 컨텍스트를 만들지 못하는 상태를 실행 프로세스에서 진단. 버튼 한 번으로 시스템 파일은 건드리지 않고 사용자 범위 desktop 런처에 X11/XIM 입력 경로를 적용하거나 해제.
 - **JetBrains IDE vmoptions 자동 패치**: `~/.config/JetBrains/<IDE>/*.vmoptions` 파일들을 스캔해 XIM 안정화 옵션(`-Dawt.toolkit.name=XToolkit`, `-Drecreate.x11.input.method=true`) 누락 여부를 표시. "패치" 버튼으로 백업 후 자동 추가 — IntelliJ Ultimate 의 `XInputMethod.setXICFocusNative` 133초 freeze 같은 사고를 예방.
 - **fcitx5 한/영 상태 유지 설정**: `~/.config/fcitx5/config` 의 `ShareInputState`/`ActiveByDefault`/`AltTriggerKeys` 를 진단. fcitx5 기본값은 창마다 한/영 상태를 따로 기억하고 새 창을 영문으로 시작해 "다른 창에 갔다 오면 영문만 입력되는" 원인이 된다. "고치기" 버튼(또는 `popmgr --fix-fcitx5-behavior`)으로 `ShareInputState=All`, `ActiveByDefault=True`, 왼쪽 Shift 단독 탭 영문 전환 해제를 적용하고 `fcitx5-remote -r` 로 **재시작 없이** 반영.
-- **fcitx5 툴킷 프론트엔드 누락 진단**: `QT_IM_MODULE=fcitx` 인데 `fcitx5-frontend-qt5/qt6` 같은 IM 모듈 패키지가 없으면 경고 + 설치 버튼.
-- **IME 재시작 버튼**: `/etc/environment` 재작성(pkexec) 없이 활성 IME 데몬만 재시작.
+- **fcitx5 툴킷 프론트엔드 누락 진단**: 그 툴킷 GUI 라이브러리(libgtk/libqt*gui)가 설치된 경우에만 `fcitx5-frontend-*` 누락을 경고 + 설치 버튼. (Qt 앱이 없는데 무조건 요구하던 것을 2026-09-24 수정)
+- **fcitx5 중복 기동 진단**: `fcitx5-korean.service` 와 xdg 자동실행이 fcitx5 를 2개 띄우면 Wayland IM 을 잃어 Wayland 앱에서만 영문이 된다. '중복 끄기'가 `~/.config/autostart` 에 같은 이름 `Hidden=true` 를 써서 유닛 하나만 남긴다(다음 로그인부터).
+- **절전 복귀 훅 v3**: `/etc/systemd/system-sleep/zz-popmgr-ime-restart` 가 `systemd-run --user`(KillMode=process)로 IME 를 재시작. v1·v2 는 동작하지 않았다(v2: 자식이 suspend cgroup 과 함께 종료). 실행 기록은 `journalctl -t popmgr-ime`.
+- **IME 재시작 버튼**: `/etc/environment` 재작성(pkexec) 없이 활성 IME 데몬만 재시작. fcitx5 는 `--replace` 대신 종료 대기 후 유닛 재시작.
 
 ### USB 탭
 - USB 장치 전체 목록 (Kensington 트랙볼·Realforce 키보드 강조)
@@ -50,18 +52,24 @@ Pop!_OS / COSMIC 데스크톱 관리 도구 — Rust + [Iced](https://github.com
 - ddcutil 설치 시 udev 룰이 연결된 모니터 i2c 장치에 세션 사용자 ACL(uaccess)을 부여하므로 i2c 그룹 가입·재로그인 없이 동작. 미설정 시 "권한 설정" 카드 노출
 
 ### COSMIC 트윅 탭
-- **cosmic-files copy-path** — 탐색기 우클릭에 '경로 복사' 항상 표시
-- **cosmic-comp 3-finger** — 터치패드 3손가락 위 스와이프 → 워크스페이스 오버뷰
+- **cosmic-files copy-path** — 탐색기 우클릭에 '경로 복사' 항상 표시 (패치 없이도 Shift+우클릭 / Ctrl+Shift+C 로 가능)
+- **3손가락 제스처** — 터치패드 3손가락 위 스와이프 → 워크스페이스 오버뷰 열기/닫기.
+  컴포지터 패치가 아니라 `libinput debug-events` 를 읽는 **systemd 사용자 서비스**(`popmgr-gestures.service`)라
+  root·재빌드가 필요 없고 apt 업그레이드에 지워지지 않는다. 예전 cosmic-comp 패치가 남아 있으면 먼저 제거하도록 안내한다.
 
-패치 적용 방식:
+copy-path 패치 적용 방식:
 1. `dpkg`로 현재 설치된 버전의 커밋 해시 확인
 2. GitHub에서 해당 커밋 타르볼 다운로드
-3. `patch -p1 --fuzz 5` 적용
+3. `patch -p1` 적용(기본 fuzz) 후 메뉴 2곳이 바뀌었는지 검증 — 실패하면 설치하지 않음
 4. `cargo build --release`
-5. `pkexec`로 `/usr/bin`에 설치 (원본 `.bak` 백업)
+5. `pkexec`로 `/usr/bin`에 설치 (원본 `.bak` 백업), 적용 버전 기록
 
-> 시스템 업데이트 후 패치가 덮어쓰이면 "패치 적용"을 다시 누르세요.
-> cosmic-comp 패치 적용 후에는 **로그아웃 → 재로그인** 필요.
+> apt 업그레이드가 패치를 덮어쓰면 카드에 "업그레이드로 소실 — 다시 적용"이 뜬다.
+
+### 전원 탭
+- 지금 절전 / 절전 방지(최대 12시간) / 예약 절전
+- **배터리 부족 시 자동 절전**: 방전 중 임계값(기본 5%) 이하면 root systemd 타이머(`popmgr-battery-guard.timer`, 1분)가
+  `systemctl suspend -i`. 복귀 후 3분 유예. popmgr 가 꺼져 있어도 동작. '지금 점검'은 DRY_RUN 으로 판정만 보여 줌.
 
 ### 앱 관리 탭
 - KakaoTalk Wine 설치 / 실행
@@ -87,8 +95,8 @@ bash install.sh
 `install.sh`가 다음을 순서대로 실행합니다:
 1. popmgr 빌드 → `~/.local/bin/popmgr` 설치
 2. `~/.local/share/applications/com.eondcom.Popmgr.desktop` 등록
-3. cosmic-files copy-path 패치 적용
-4. cosmic-comp 3-finger 패치 적용
+3. cosmic-files copy-path 패치 적용 (설치된 버전 커밋 기준, 검증 실패 시 건너뜀)
+4. 3손가락 제스처는 설치 후 popmgr COSMIC 탭에서 '켜기'
 
 ### 수동 빌드
 
@@ -114,8 +122,8 @@ cp com.eondcom.Popmgr.desktop ~/.local/share/applications/
 # cosmic-files 복구
 sudo cp /usr/bin/cosmic-files.bak /usr/bin/cosmic-files
 
-# cosmic-comp 복구
-sudo cp /usr/bin/cosmic-comp.bak /usr/bin/cosmic-comp
+# (예전 3-finger 컴포지터 패치가 남아 있을 때) cosmic-comp 스톡 복원 — 이후 재로그인
+sudo apt-get install --reinstall cosmic-comp
 ```
 
 또는 popmgr COSMIC 탭에서 "패치 제거" 버튼 클릭 (`apt-get install --reinstall`).
@@ -172,6 +180,39 @@ sudo cp /usr/bin/cosmic-comp.bak /usr/bin/cosmic-comp
 - JetBrains IDE vmoptions 자동 패치 (`~/.config/JetBrains/<IDE>/*.vmoptions`).
   - 추가 옵션: `-Dawt.toolkit.name=XToolkit`, `-Drecreate.x11.input.method=true`.
   - 이유: native Wayland IM 경로의 freeze 회피 + IME 데몬 재시작 후 입력 컨텍스트 재구성.
+
+## 다음 세션에서 할 일
+
+작업 현황판: 구글시트 "EOND ALL Project management" → `popmgr` 탭(#1~#5). 스펙: `.claude/plans/2026-09-24-battery-guard.md`.
+
+1. **한글 — 재로그인 후 확인**: fcitx5 가 하나만 떠야 한다(중복 끄기 적용됨, 2026-09-24 22:18).
+   ```bash
+   pgrep -c -x fcitx5                                   # 1 이어야 함
+   journalctl --user -b _COMM=fcitx5 | grep -c 'Loaded addon waylandim'   # 1 이어야 함
+   ```
+2. **한글 — 절전 복귀 확인**: 훅 v3 설치됨. 절전 → 복귀 후 한글 입력 + 로그 확인.
+   ```bash
+   journalctl -b -t popmgr-ime          # "resume: fcitx5 restart scheduled" 가 있어야 함
+   ```
+3. **3손가락**: COSMIC 탭 '컴포지터 패치 제거' → 재로그인 → '켜기' → 실제 스와이프 확인
+   (`journalctl --user -u popmgr-gestures` 에 `UP <이동량>`). 임계값 60 이 안 맞으면 스크립트 `THRESH` 조정.
+4. **경로 복사**: COSMIC 탭 '패치 적용'(빌드 수 분) → 우클릭 메뉴 확인.
+5. **PR #13 병합**(draft): https://github.com/eondcom/popmgr/pull/13
+6. (선택) plucky 에서 들어온 고아 Qt 라이브러리 정리 — 나중에 apt 로 Qt 앱 설치 시 ABI 충돌 원인:
+   `sudo apt remove libqt6core6t64 libqt6dbus6 libqt5core5t64 libqt5dbus5t64 libqt5network5t64`
+7. (선택) popmgr 입력칸 한글 입력: iced 0.13 은 IME 미지원 → iced 0.14 업그레이드 필요.
+
+## 세션 로그
+
+- **2026-09-24**: 배터리 저잔량 자동 절전(root 타이머, 실기 9%에서 절전 확인), fcitx5 이중 기동·절전 훅 v3,
+  3손가락 사용자 서비스, copy-path 패치 안전화, EOND UI 디자인 토큰(Pretendard 등), Qt 툴킷 경고 수정, install.sh 정리.
+  Codex 는 사용량 한도(10-18까지)로 Claude 가 직접 구현. 스레드 글 Ddq3iyWE6-c + 답글 3개(스크린샷).
+
+&nbsp;
+
+관련 세션
+
+    claude --resume 75627a71-ba2d-49de-a38a-07aa8a43567d
 
 ## 라이선스
 
