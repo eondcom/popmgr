@@ -916,6 +916,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "eond-ui-theme"
+version = "0.1.0"
+dependencies = [
+ "iced",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2559,6 +2566,7 @@ name = "popmgr"
 version = "0.1.0"
 dependencies = [
  "dirs 5.0.1",
+ "eond-ui-theme",
  "iced",
  "serde",
  "serde_json",

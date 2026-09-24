@@ -2082,20 +2082,25 @@ fn jetbrains_card<'a>(
 
 // ── 공통 위젯 ───────────────────────────────────────────────────
 
-// Toss 라이트 팔레트 (금융권 톤: 회색 캔버스 + 흰 카드 + 단일 블루 강조)
-pub const C_OK:       Color = Color { r: 0.082, g: 0.769, b: 0.494, a: 1.0 }; // #15C47E
-pub const C_ERR:      Color = Color { r: 0.941, g: 0.267, b: 0.322, a: 1.0 }; // #F04452
-pub const C_WARN:     Color = Color { r: 0.96,  g: 0.55,  b: 0.0,   a: 1.0 }; // #F58C00
-pub const C_DIM:      Color = Color { r: 0.545, g: 0.584, b: 0.631, a: 1.0 }; // #8B95A1 보조 텍스트
-pub const C_BLUE:     Color = Color { r: 0.192, g: 0.510, b: 0.965, a: 1.0 }; // #3182F6 토스 블루
-pub const C_GREEN:    Color = Color { r: 0.082, g: 0.769, b: 0.494, a: 1.0 };
-pub const C_PANEL:    Color = Color { r: 1.0,   g: 1.0,   b: 1.0,   a: 1.0 }; // 카드 표면(흰색)
-pub const C_BG:       Color = Color { r: 0.949, g: 0.957, b: 0.965, a: 1.0 }; // #F2F4F6 캔버스
-pub const C_SURFACE:  Color = Color { r: 1.0,   g: 1.0,   b: 1.0,   a: 1.0 }; // 카드/패널(흰색)
-pub const C_SURFACE2: Color = Color { r: 0.949, g: 0.957, b: 0.965, a: 1.0 }; // 인셋/보조 표면
-pub const C_BORDER:   Color = Color { r: 0.898, g: 0.910, b: 0.922, a: 1.0 }; // #E5E8EB 헤어라인
-pub const C_TEXT:     Color = Color { r: 0.098, g: 0.122, b: 0.157, a: 1.0 }; // #191F28 본문
-pub const C_BTN2:     Color = Color { r: 0.910, g: 0.925, b: 0.937, a: 1.0 }; // #E8ECF0 보조 버튼
+// EOND UI App 라이트 · 파랑 팔레트(~/dev/eond-ui-app tokens.json) — 바탕 app_bg → 카드 c1 → 겹침 c2 → 선택 c3.
+// 테마·메인 색을 바꾸려면 여기 THEME_MODE / THEME_ACCENT 만 고친다(main.rs app_theme 도 같은 값을 쓴다).
+use eond_ui_theme::{palette, Accent, Mode, Palette};
+pub const THEME_MODE: Mode = Mode::Light;
+pub const THEME_ACCENT: Accent = Accent::Blue;
+const P: Palette = palette(THEME_MODE, THEME_ACCENT);
+pub const C_OK:       Color = P.success.to_iced();  // 완료·정상
+pub const C_ERR:      Color = P.danger.to_iced();   // 삭제·실패
+pub const C_WARN:     Color = P.warning.to_iced();  // 주의·다시 해야 함
+pub const C_DIM:      Color = P.fg3.to_iced();      // 보조 텍스트
+pub const C_BLUE:     Color = P.primary.to_iced();  // 메인 색(주 동작)
+pub const C_GREEN:    Color = P.success.to_iced();
+pub const C_PANEL:    Color = P.c1.to_iced();       // 카드 표면
+pub const C_BG:       Color = P.app_bg.to_iced();   // 캔버스
+pub const C_SURFACE:  Color = P.c1.to_iced();       // 카드/패널
+pub const C_SURFACE2: Color = P.c2.to_iced();       // 인셋/보조 표면
+pub const C_BORDER:   Color = P.c3.to_iced();       // 헤어라인
+pub const C_TEXT:     Color = P.fg.to_iced();       // 본문
+pub const C_BTN2:     Color = P.c3.to_iced();       // 보조 버튼
 
 pub fn action_btn<'a, M: Clone + 'a>(label: impl Into<String>, msg: M, enabled: bool, color: Color) -> Element<'a, M> {
     let bg = if enabled { color } else { C_BTN2 };

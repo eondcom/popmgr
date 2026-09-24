@@ -13,6 +13,8 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
+# EOND UI App 토큰(다크/라이트 × 메인 색) — ~/dev/eond-ui-app/rust/eond-ui-theme
+eond-ui-theme = { path = "../eond-ui-app/rust/eond-ui-theme", features = ["iced"] }
 
 [profile.release]
 opt-level = 3

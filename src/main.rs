@@ -18,25 +18,16 @@ use ui::{
     printer::{PrinterMsg, PrinterState},
     usb::{UsbMsg, UsbState},
 };
-use ui::ime::{C_BG, C_BLUE, C_BORDER, C_DIM, C_OK, C_ERR, C_SURFACE, C_TEXT};
+use ui::ime::{C_BG, C_BLUE, C_BORDER, C_DIM, C_SURFACE, C_TEXT};
 
 /// 두 색을 비율 t(0~1)로 섞기.
 fn mix(a: Color, b: Color, t: f32) -> Color {
     Color { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: 1.0 }
 }
 
-/// 앱 전역 Toss 라이트 테마. 윈도우 배경·슬라이더·스크롤바·입력창 기본색을 결정.
+/// 앱 전역 테마 — EOND UI App(eond-ui-theme). 윈도우 배경·슬라이더·스크롤바·입력창 기본색을 결정.
 fn app_theme() -> iced::Theme {
-    iced::Theme::custom(
-        "Toss Light".to_string(),
-        iced::theme::Palette {
-            background: C_BG,
-            text: C_TEXT,
-            primary: C_BLUE,
-            success: C_OK,
-            danger: C_ERR,
-        },
-    )
+    eond_ui_theme::iced_theme::theme(ui::ime::THEME_MODE, ui::ime::THEME_ACCENT)
 }
 
 #[derive(Debug, Clone, PartialEq)]
