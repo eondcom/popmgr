@@ -239,6 +239,7 @@ fn init() -> (App, Task<Message>) {
         Task::perform(async { () }, |_| Message::Audio(AudioMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Disk(DiskMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Display(DisplayMsg::Refresh)),
+        Task::perform(async { () }, |_| Message::Power(PowerMsg::GuardRefresh)),
         Task::perform(async { () }, |_| Message::Cosmic(CosmicMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Printer(PrinterMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Apps(AppsMsg::Refresh)),
@@ -291,7 +292,16 @@ fn subscription(app: &App) -> Subscription<Message> {
 
 fn update(app: &mut App, msg: Message) -> Task<Message> {
     match msg {
-        Message::TabSelect(t) => { app.tab = t; Task::none() }
+        Message::TabSelect(t) => {
+            // 전원 탭: 배터리 잔량·가드 상태는 들어올 때마다 새로 읽는다
+            let is_power = t == Tab::Power;
+            app.tab = t;
+            if is_power {
+                Task::perform(async { () }, |_| Message::Power(PowerMsg::GuardRefresh))
+            } else {
+                Task::none()
+            }
+        }
         Message::Ime(m) => {
             let (task, res) = app.ime.update(m);
             if let Some(r) = res { push_log(&mut app.output, r); }
