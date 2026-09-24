@@ -167,6 +167,7 @@ pub enum ImeMsg {
     FixFcitx5Behavior,
     InstallFcitx5Frontends,
     FixFcitx5Launchers,
+    RegisterImeFixShortcut,
     RestartDaemon,
     Done(CmdResult),
 }
@@ -309,6 +310,10 @@ impl ImeState {
                 );
                 (task, None)
             }
+            ImeMsg::RegisterImeFixShortcut => {
+                let r = register_ime_fix_shortcut();
+                (Task::perform(scan_ime_status(), ImeMsg::Refreshed), Some(r))
+            }
             ImeMsg::FixFcitx5Launchers => {
                 let names = self.status.as_ref().map(|s| s.fcitx5_dup_launchers.clone()).unwrap_or_default();
                 self.running = Some("fcitx5 자동실행 중복 제거 중...".into());
@@ -447,6 +452,10 @@ impl ImeState {
                 col = col.push(fcitx5_frontend_card(&st.fcitx5_missing_frontends, is_running));
             }
 
+            if st.active == Some(ImeKind::Fcitx5) {
+                col = col.push(Space::with_height(14));
+                col = col.push(ime_fix_card(ime_fix_shortcut_registered(), is_running));
+            }
             col = col.push(Space::with_height(14));
             col = col.push(resume_hook_card(st.resume_hook_installed, is_running));
 
@@ -925,6 +934,118 @@ const FCITX5_RESTART_SH: &str = "pkill -x fcitx5 2>/dev/null; \
     if systemctl --user cat fcitx5-korean.service >/dev/null 2>&1; then \
     systemctl --user restart fcitx5-korean.service; \
     else setsid fcitx5 -d </dev/null >/dev/null 2>&1 & fi";
+
+// ── 한글 복구 단축키 (Ctrl+Shift+8) ─────────────────────────────
+//
+// "한글이 안 된다"가 절전·잠금 없이도 생기는데(2026-09-25) 그 순간의 상태 기록이 없어 원인을 못 잡았다.
+// 단축키 한 번으로 fcitx5 를 재시작하면서, 재시작 전후 상태를 로그에 남겨 다음 조사 근거로 쓴다.
+// '적용'(/etc/environment 재작성, pkexec)보다 가볍다.
+
+const IME_FIX_KEY: &str = "8";
+
+fn ime_fix_log_path() -> std::path::PathBuf {
+    dirs::state_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("popmgr")
+        .join("ime-fix.log")
+}
+
+fn sh_output(cmd: &str) -> String {
+    std::process::Command::new("sh")
+        .args(["-c", cmd])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// 입력기 상태 스냅샷: 프로세스·활성 상태·Wayland/X11/dbus 입력 컨텍스트
+fn ime_snapshot() -> String {
+    let procs = sh_output("pgrep -a -x fcitx5");
+    let state = sh_output("fcitx5-remote");
+    let unit = sh_output("systemctl --user is-active fcitx5-korean.service");
+    let debug = sh_output(
+        "busctl --user call org.fcitx.Fcitx5 /controller org.fcitx.Fcitx.Controller1 DebugInfo 2>&1 \
+         | sed 's/\\\\n/\\n/g' | grep -E 'Group|IC'",
+    );
+    format!("  프로세스: {procs}\n  상태(2=한글): {state} · 유닛: {unit}\n  입력 컨텍스트:\n{debug}")
+}
+
+pub fn ime_fix_cli() -> i32 {
+    let before = ime_snapshot();
+    let ok = std::process::Command::new("sh")
+        .args(["-c", FCITX5_RESTART_SH])
+        .status()
+        .is_ok_and(|s| s.success());
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let after = ime_snapshot();
+    let when = sh_output("date '+%F %T'");
+    let entry = format!("=== {when} 한글 복구(Ctrl+Shift+8)\n[전]\n{before}\n[후]\n{after}\n\n");
+    let path = ime_fix_log_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = f.write_all(entry.as_bytes());
+    }
+    let _ = std::process::Command::new("notify-send")
+        .args(["한글 입력기 재시작", "상태 기록: ~/.local/state/popmgr/ime-fix.log"])
+        .status();
+    if ok { 0 } else { 1 }
+}
+
+fn ime_fix_shortcut_registered() -> bool {
+    crate::ui::apps::shortcuts_config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .is_some_and(|c| c.contains("--ime-fix"))
+}
+
+fn register_ime_fix_shortcut() -> CmdResult {
+    let Some(path) = crate::ui::apps::shortcuts_config_path() else {
+        return CmdResult { success: false, output: "홈 디렉터리를 찾을 수 없습니다.".into() };
+    };
+    let exe = match std::env::current_exe() {
+        Ok(p) if p.is_absolute() => p,
+        _ => return CmdResult { success: false, output: "popmgr 절대 경로를 찾지 못했습니다.".into() },
+    };
+    let command = format!("{} --ime-fix", exe.display());
+    if let Err(e) = crate::ui::cosmic_tweaks::write_shortcut_updates(&path, &[(IME_FIX_KEY, command.clone())]) {
+        return CmdResult { success: false, output: format!("단축키 저장 실패: {e}") };
+    }
+    let described = std::fs::read_to_string(&path).map(|c| {
+        crate::ui::apps::add_recording_shortcut_description(&c, IME_FIX_KEY, &command, "popmgr 한글 입력기 복구")
+    });
+    match described.and_then(|c| std::fs::write(&path, c)) {
+        Ok(()) => CmdResult {
+            success: true,
+            output: "Ctrl+Shift+8 한글 복구 단축키를 등록했습니다. 한글이 안 될 때 누르면 입력기를 다시 띄우고 상태를 기록합니다.".into(),
+        },
+        Err(e) => CmdResult { success: false, output: format!("단축키 설명 저장 실패: {e}") },
+    }
+}
+
+fn ime_fix_card(registered: bool, disabled: bool) -> Element<'static, ImeMsg> {
+    let (title, col) = if registered {
+        ("[OK] 한글 복구 단축키 Ctrl+Shift+8 등록됨", C_OK)
+    } else {
+        ("한글 복구 단축키 (Ctrl+Shift+8)", C_TEXT)
+    };
+    let mut body = column![
+        text(title).size(TYPE_BODY).font(FONT_SEMIBOLD).color(col),
+        Space::with_height(4),
+        text(
+            "한글이 안 쳐질 때 누르면 입력기만 다시 띄웁니다('적용'보다 가볍고 비밀번호 없음).\n\
+             누른 순간의 입력기 상태를 ~/.local/state/popmgr/ime-fix.log 에 남겨 원인 조사에 씁니다."
+        ).size(TYPE_CAPTION).color(C_DIM),
+    ];
+    if !registered {
+        body = body.push(Space::with_height(8)).push(row![
+            Space::with_width(Length::Fill),
+            action_btn("단축키 등록", ImeMsg::RegisterImeFixShortcut, !disabled, C_BLUE),
+        ]);
+    }
+    card(body)
+}
 
 /// setsid 로 popmgr 프로세스와 완전히 분리해 띄운다 (popmgr 종료 시 함께 죽지 않도록).
 fn daemon_restart_cmd(kind: &ImeKind) -> &'static str {
