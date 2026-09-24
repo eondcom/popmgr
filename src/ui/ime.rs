@@ -123,6 +123,10 @@ pub struct ImeStatus {
     pub fcitx5_behavior: Option<Fcitx5Behavior>,
     // fcitx5 활성인데 미설치인 툴킷 프론트엔드(IM 모듈) 패키지
     pub fcitx5_missing_frontends: Vec<&'static str>,
+    // systemd 유닛과 함께 fcitx5 를 또 띄우는 xdg 자동실행 항목 (fcitx5 활성일 때만)
+    pub fcitx5_dup_launchers: Vec<String>,
+    // 지금 떠 있는 fcitx5 프로세스 수 (2 이상이면 중복 기동)
+    pub fcitx5_instances: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +147,7 @@ pub enum ImeMsg {
     UninstallLibreOfficeCompat,
     FixFcitx5Behavior,
     InstallFcitx5Frontends,
+    FixFcitx5Launchers,
     RestartDaemon,
     Done(CmdResult),
 }
@@ -285,6 +290,11 @@ impl ImeState {
                 );
                 (task, None)
             }
+            ImeMsg::FixFcitx5Launchers => {
+                let names = self.status.as_ref().map(|s| s.fcitx5_dup_launchers.clone()).unwrap_or_default();
+                self.running = Some("fcitx5 자동실행 중복 제거 중...".into());
+                (Task::perform(fix_fcitx5_launchers(names), ImeMsg::Done), None)
+            }
             ImeMsg::InstallResumeHook => {
                 self.running = Some("Resume 훅 설치 중...".into());
                 let task = Task::perform(
@@ -401,6 +411,10 @@ impl ImeState {
             col = col.push(text(daemon_txt).size(12).color(daemon_col));
 
             // ── fcitx5 전용 진단 ──────────────────────────────
+            if !st.fcitx5_dup_launchers.is_empty() || st.fcitx5_instances > 1 {
+                col = col.push(Space::with_height(14));
+                col = col.push(fcitx5_dup_card(&st.fcitx5_dup_launchers, st.fcitx5_instances, is_running));
+            }
             if let Some(ref beh) = st.fcitx5_behavior {
                 col = col.push(Space::with_height(14));
                 col = col.push(fcitx5_behavior_card(beh, is_running));
@@ -603,6 +617,14 @@ async fn scan_ime_status() -> ImeStatus {
         (None, Vec::new())
     };
 
+    // 진단: fcitx5 중복 기동 (유닛 + xdg 자동실행)
+    let (fcitx5_dup_launchers, fcitx5_instances) = if active == Some(ImeKind::Fcitx5) {
+        let count = runner::run("pgrep", &["-c", "-x", "fcitx5"]).await;
+        (scan_fcitx5_dup_launchers().await, count.output.trim().parse().unwrap_or(0))
+    } else {
+        (Vec::new(), 0)
+    };
+
     let libreoffice_installed = which_exists("libreoffice").await;
     let (libreoffice_running_wayland, libreoffice_fcitx_module_loaded) =
         detect_running_libreoffice_ime();
@@ -616,6 +638,89 @@ async fn scan_ime_status() -> ImeStatus {
         libreoffice_installed, libreoffice_running_wayland,
         libreoffice_fcitx_module_loaded, libreoffice_compat_installed,
         fcitx5_behavior, fcitx5_missing_frontends,
+        fcitx5_dup_launchers, fcitx5_instances,
+    }
+}
+
+// ── fcitx5 실행 경로 단일화 ──────────────────────────────────
+//
+// 유닛(fcitx5-korean.service)과 /etc/xdg/autostart 항목이 로그인마다 fcitx5 를 2개 띄웠다.
+// cosmic-comp 의 input-method-v2 는 좌석당 1개이고 fcitx5 는 `unavailable` 을 받으면 재시도하지 않아,
+// 먼저 IM 을 잡은 쪽이 dbus 이름 경쟁에서 지면 살아남은 fcitx5 는 세션 내내 Wayland IM 이 없다
+// → Wayland 앱(COSMIC 앱·Chrome·Electron·popmgr)에서만 영문만 입력되는 증상.
+// 유닛만 남기고 xdg 항목은 ~/.config/autostart 에 같은 이름 + Hidden=true 로 가린다(root 불필요).
+
+const FCITX5_UNIT: &str = "fcitx5-korean.service";
+
+fn user_autostart_dir() -> std::path::PathBuf {
+    dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("/nonexistent")).join("autostart")
+}
+
+/// Exec 가 fcitx5 를 띄우는 .desktop 인지
+fn desktop_launches_fcitx5(content: &str) -> bool {
+    content.lines().any(|l| {
+        l.trim()
+            .strip_prefix("Exec=")
+            .and_then(|cmd| cmd.split_whitespace().next())
+            .is_some_and(|bin| bin.rsplit('/').next() == Some("fcitx5"))
+    })
+}
+
+fn desktop_hidden(content: &str) -> bool {
+    content.lines().any(|l| {
+        let l = l.trim();
+        l.eq_ignore_ascii_case("Hidden=true") || l.eq_ignore_ascii_case("X-GNOME-Autostart-enabled=false")
+    })
+}
+
+/// 유닛이 켜져 있을 때, 그와 별개로 fcitx5 를 띄우는 자동실행 항목(파일 이름) 목록
+async fn scan_fcitx5_dup_launchers() -> Vec<String> {
+    let enabled = runner::run("systemctl", &["--user", "is-enabled", FCITX5_UNIT]).await;
+    if enabled.output.trim() != "enabled" {
+        return Vec::new();
+    }
+    let user_dir = user_autostart_dir();
+    let mut dups = Vec::new();
+    for dir in [std::path::PathBuf::from("/etc/xdg/autostart"), user_dir.clone()] {
+        let Ok(mut rd) = tokio::fs::read_dir(&dir).await else { continue };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".desktop") || dups.contains(&name) {
+                continue;
+            }
+            // 사용자 디렉터리의 같은 이름 파일이 시스템 항목을 덮어쓴다(XDG 규칙)
+            let effective = tokio::fs::read_to_string(user_dir.join(&name))
+                .await
+                .or(tokio::fs::read_to_string(entry.path()).await)
+                .unwrap_or_default();
+            if desktop_launches_fcitx5(&effective) && !desktop_hidden(&effective) {
+                dups.push(name);
+            }
+        }
+    }
+    dups
+}
+
+async fn fix_fcitx5_launchers(names: Vec<String>) -> CmdResult {
+    let dir = user_autostart_dir();
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return CmdResult { success: false, output: format!("{} 생성 실패: {e}", dir.display()) };
+    }
+    for name in &names {
+        let body = format!(
+            "[Desktop Entry]\nType=Application\nName=Fcitx5 (popmgr: {FCITX5_UNIT} 와 중복이라 끔)\nHidden=true\n"
+        );
+        if let Err(e) = tokio::fs::write(dir.join(name), body).await {
+            return CmdResult { success: false, output: format!("{name} 쓰기 실패: {e}") };
+        }
+    }
+    CmdResult {
+        success: true,
+        output: format!(
+            "fcitx5 자동실행 중복 제거: {} 를 껐습니다. 이제 {FCITX5_UNIT} 하나만 fcitx5 를 띄웁니다.\n\
+             다음 로그인부터 적용됩니다 (지금 세션은 그대로).",
+            names.join(", ")
+        ),
     }
 }
 
@@ -672,18 +777,15 @@ async fn scan_shell_init_conflicts(active: &ImeKind) -> Vec<ShellInitConflict> {
 
 const RESUME_HOOK_PATH: &str = "/etc/systemd/system-sleep/zz-popmgr-ime-restart";
 
-// v2 변경점 (v1은 DISPLAY=:0 하드코딩 + WAYLAND_DISPLAY/DBUS 미설정이라
-// 세션이 :1/wayland-1 인 머신에서는 재시작된 데몬이 세션에 연결되지 못했음):
-//  - 재시작 대상 데몬의 /proc/PID/environ 에서 실제 세션 env를 읽고,
-//    소켓 존재 확인으로 검증 후 실패 시 소켓 탐색으로 폴백.
-//  - systemd-sleep 훅은 완료까지 resume을 블록하므로 setsid로 완전 분리 후
-//    백그라운드에서 1초 대기(컴포지터 안정화) 후 재시작.
-const RESUME_HOOK_SCRIPT: &str = r#"#!/bin/sh
-# popmgr-resume-ime-hook: v2
-# Restart active IME daemon after wake to recover Korean input.
-# Discovers the real session env (WAYLAND_DISPLAY / DISPLAY / DBUS) at run
-# time from the running daemon's /proc environ + socket probing, instead of
-# hardcoding DISPLAY=:0 (v1 bug: broke whenever the session was :1/wayland-1).
+// v3 변경점 (v2 는 한 번도 효과가 없었다):
+//  - 훅에서 setsid 로 띄운 자식도 systemd-suspend.service(oneshot, KillMode=control-group) cgroup 에 남아
+//    훅이 끝나는 순간 SIGTERM 으로 함께 죽었다. 사용자 systemd 매니저에 transient 유닛으로 넘겨 cgroup 을 벗어난다.
+//  - 사용자 매니저에서 실행되므로 세션 환경(WAYLAND_DISPLAY 등)을 /proc 에서 찾을 필요가 없다.
+//  - fcitx5 는 `--replace` 대신 유닛 재시작(없으면 기존 프로세스 종료 대기 후 기동) — 중복 기동 경쟁 방지.
+//  - 실행 여부를 저널(logger -t popmgr-ime)에 남긴다.
+const RESUME_HOOK_TEMPLATE: &str = r#"#!/bin/sh
+# popmgr-resume-ime-hook: v3
+# 절전 복귀 후 활성 IME 데몬을 재시작해 한글 입력을 복구한다.
 
 [ "$1" = "post" ] || exit 0
 case "$2" in
@@ -691,79 +793,49 @@ case "$2" in
   *) exit 0 ;;
 esac
 
-# proc_env <pid> <VAR>: read one variable from a process's environment
-proc_env() {
-  tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | sed -n "s/^$2=//p" | head -n 1
-}
-
 for d in /run/user/[0-9]*; do
   uid="${d##*/}"
   [ "$uid" -ge 1000 ] 2>/dev/null || continue
+  [ -S "$d/bus" ] || continue
   user="$(getent passwd "$uid" | cut -d: -f1)"
   [ -n "$user" ] || continue
 
   for daemon in fcitx5 ibus-daemon kime; do
-    pid="$(pgrep -x -o -u "$uid" "$daemon" 2>/dev/null)" || continue
+    pgrep -x -u "$uid" "$daemon" >/dev/null 2>&1 || continue
     case "$daemon" in
-      fcitx5)      cmd="fcitx5 -d --replace" ;;
-      ibus-daemon) cmd="ibus-daemon -drxR" ;;
-      kime)        cmd="pkill -x kime; sleep 0.2; setsid kime" ;;
+      fcitx5)      cmd='__FCITX5_RESTART__' ;;
+      ibus-daemon) cmd='ibus-daemon -drxR' ;;
+      kime)        cmd='pkill -x kime; sleep 0.3; kime' ;;
     esac
 
-    # WAYLAND_DISPLAY: daemon env 우선, 소켓 검증 실패 시 런타임 디렉토리 탐색
-    # (wayland-1-renderD128 같은 부속 소켓/락파일은 제외)
-    wl="$(proc_env "$pid" WAYLAND_DISPLAY)"
-    if [ -n "$wl" ] && [ ! -S "$d/$wl" ]; then wl=""; fi
-    if [ -z "$wl" ]; then
-      for s in "$d"/wayland-*; do
-        n="${s##*/}"
-        case "$n" in wayland-*[!0-9]*) continue ;; esac
-        if [ -S "$s" ]; then wl="$n"; break; fi
-      done
+    # 2초 뒤(컴포지터 안정화) 사용자 매니저에서 실행. KillMode=process: 데몬화한 자식이 유닛 종료 때 죽지 않게.
+    if runuser -u "$user" -- env XDG_RUNTIME_DIR="$d" DBUS_SESSION_BUS_ADDRESS="unix:path=$d/bus" \
+        systemd-run --user --collect --quiet --on-active=2 -p KillMode=process /bin/sh -c "$cmd" \
+        >/dev/null 2>&1; then
+      logger -t popmgr-ime "resume: $daemon restart scheduled for $user"
+    else
+      logger -t popmgr-ime "resume: systemd-run failed for $user"
     fi
-
-    # DISPLAY: daemon env 우선, X 소켓 검증 실패 시 /tmp/.X11-unix 탐색
-    disp="$(proc_env "$pid" DISPLAY)"
-    case "$disp" in
-      :*) num="${disp#:}"; num="${num%%.*}"
-          [ -S "/tmp/.X11-unix/X$num" ] || disp="" ;;
-      *)  disp="" ;;
-    esac
-    if [ -z "$disp" ]; then
-      for x in /tmp/.X11-unix/X[0-9]*; do
-        if [ -S "$x" ]; then disp=":${x##*/X}"; break; fi
-      done
-    fi
-
-    # D-Bus 세션 버스: daemon env 우선, 없으면 XDG 표준 사용자 버스 소켓
-    dbus="$(proc_env "$pid" DBUS_SESSION_BUS_ADDRESS)"
-    if [ -z "$dbus" ] && [ -S "$d/bus" ]; then dbus="unix:path=$d/bus"; fi
-
-    set -- XDG_RUNTIME_DIR="$d"
-    [ -n "$wl" ]   && set -- "$@" WAYLAND_DISPLAY="$wl"
-    [ -n "$disp" ] && set -- "$@" DISPLAY="$disp"
-    [ -n "$dbus" ] && set -- "$@" DBUS_SESSION_BUS_ADDRESS="$dbus"
-
-    # setsid로 완전 분리 + 1초 대기 후 재시작: systemd는 모든 훅이 끝나야
-    # resume을 완료하므로 훅 자체는 즉시 반환해야 한다.
-    runuser -u "$user" -- env "$@" \
-      sh -c "setsid sh -c 'sleep 1; $cmd' </dev/null >/dev/null 2>&1 &"
     break
   done
 done
 "#;
 
+fn resume_hook_script() -> String {
+    RESUME_HOOK_TEMPLATE.replace("__FCITX5_RESTART__", FCITX5_RESTART_SH)
+}
+
 fn detect_resume_hook() -> bool {
     // 현재 버전 마커까지 일치해야 "설치됨"으로 본다.
-    // 구버전(v1: DISPLAY=:0 하드코딩)은 미설치로 표시해 재설치를 유도.
+    // 구버전(v1·v2 — 실제로는 동작하지 않음)은 미설치로 표시해 재설치를 유도.
     std::fs::read_to_string(RESUME_HOOK_PATH)
-        .map(|c| c.contains("# popmgr-resume-ime-hook: v2"))
+        .map(|c| c.contains("# popmgr-resume-ime-hook: v3"))
         .unwrap_or(false)
 }
 
 async fn install_resume_hook() -> CmdResult {
     let tmp = "/tmp/popmgr-resume-ime-hook.sh";
-    if let Err(e) = tokio::fs::write(tmp, RESUME_HOOK_SCRIPT).await {
+    if let Err(e) = tokio::fs::write(tmp, resume_hook_script()).await {
         return CmdResult { success: false, output: format!("임시 파일 쓰기 실패: {e}") };
     }
     // 디렉토리가 없는 배포판이 있음 (Pop!_OS 등) → mkdir -p 후 install
@@ -811,12 +883,21 @@ fn daemon_bin(kind: &ImeKind) -> &'static str {
     }
 }
 
+/// fcitx5 재시작. 유닛이 있으면 유닛으로(중복 기동 방지), 없으면 기존 프로세스가 완전히 끝난 뒤 띄운다.
+/// `--replace` 로 겹쳐 띄우면 두 인스턴스가 Wayland IM(좌석당 1개)을 두고 경쟁해 한쪽이 IM 을 잃는다.
+/// 작은따옴표를 쓰지 않는다 — 절전 훅 스크립트에 '...' 로 감싸 넣는다.
+const FCITX5_RESTART_SH: &str = "pkill -x fcitx5 2>/dev/null; \
+    for i in 1 2 3 4 5 6 7 8 9 10; do pgrep -x fcitx5 >/dev/null || break; sleep 0.3; done; \
+    if systemctl --user cat fcitx5-korean.service >/dev/null 2>&1; then \
+    systemctl --user restart fcitx5-korean.service; \
+    else setsid fcitx5 -d </dev/null >/dev/null 2>&1 & fi";
+
 /// setsid 로 popmgr 프로세스와 완전히 분리해 띄운다 (popmgr 종료 시 함께 죽지 않도록).
 fn daemon_restart_cmd(kind: &ImeKind) -> &'static str {
     match kind {
         ImeKind::Kime   => "pkill -x kime 2>/dev/null; sleep 0.3; setsid kime </dev/null >/dev/null 2>&1 &",
         ImeKind::Ibus   => "pkill -x ibus-daemon 2>/dev/null; sleep 0.3; setsid ibus-daemon -drxR </dev/null >/dev/null 2>&1 &",
-        ImeKind::Fcitx5 => "pkill -x fcitx5 2>/dev/null; sleep 0.3; setsid fcitx5 -d --replace </dev/null >/dev/null 2>&1 &",
+        ImeKind::Fcitx5 => FCITX5_RESTART_SH,
     }
 }
 
@@ -1833,10 +1914,11 @@ async fn apply_ime(kind: ImeKind) -> CmdResult {
     let daemon_alive = runner::run("pgrep", &["-x", pgrep_target]).await.success;
 
     // systemd user service autostart 설정
+    // fcitx5 는 fcitx5.service 가 없고 fcitx5-korean.service 로 뜬다 (예전엔 없는 유닛을 켜려 했음)
     let (enable, disable): (&[&str], &[&str]) = match &kind {
-        ImeKind::Ibus   => (&["ibus.service"], &["fcitx5.service"]),
-        ImeKind::Fcitx5 => (&["fcitx5.service"], &["ibus.service"]),
-        ImeKind::Kime   => (&[], &["ibus.service", "fcitx5.service"]),
+        ImeKind::Ibus   => (&["ibus.service"], &[FCITX5_UNIT]),
+        ImeKind::Fcitx5 => (&[FCITX5_UNIT], &["ibus.service"]),
+        ImeKind::Kime   => (&[], &["ibus.service", FCITX5_UNIT]),
     };
     for svc in disable {
         runner::run("systemctl", &["--user", "disable", "--now", svc]).await;
@@ -1901,6 +1983,37 @@ fn shell_conflict_card<'a>(
             ..Default::default()
         })
         .into()
+}
+
+fn fcitx5_dup_card(launchers: &[String], instances: usize, disabled: bool) -> Element<'static, ImeMsg> {
+    let mut body = column![
+        text("[!] fcitx5 가 두 번 실행됨 — 창에 따라 한글이 안 되는 원인").size(13).color(C_ERR),
+        Space::with_height(4),
+        text(
+            "로그인할 때 fcitx5 가 두 경로로 떠서 서로 경쟁합니다. 순서가 꼬이면 살아남은 fcitx5 가 \
+             Wayland 입력 연결을 못 잡아, 그 세션 내내 COSMIC 앱·Chrome·Electron 에서만 영문만 입력됩니다\n\
+             (GTK 앱·카카오톡은 정상이라 '창마다 다르게' 보임). systemd 유닛 하나만 남기면 해결됩니다."
+        ).size(11).color(C_DIM),
+        Space::with_height(6),
+    ];
+    if instances > 1 {
+        body = body.push(text(format!("지금 fcitx5 프로세스 {instances}개")).size(11).color(C_WARN));
+    }
+    if !launchers.is_empty() {
+        body = body.push(
+            text(format!("중복 자동실행: {} (+ {FCITX5_UNIT})", launchers.join(", "))).size(11).color(C_WARN),
+        );
+        body = body.push(Space::with_height(8));
+        body = body.push(row![
+            Space::with_width(Length::Fill),
+            action_btn("중복 끄기 (다음 로그인부터)", ImeMsg::FixFcitx5Launchers, !disabled, C_BLUE),
+        ]);
+    } else {
+        body = body.push(
+            text("자동실행 중복은 이미 꺼져 있습니다. 로그아웃 후 다시 로그인하면 하나만 뜹니다.").size(11).color(C_DIM),
+        );
+    }
+    card(body)
 }
 
 fn resume_hook_card(installed: bool, disabled: bool) -> Element<'static, ImeMsg> {
@@ -2174,4 +2287,55 @@ pub fn luminance(c: Color) -> f32 { 0.299 * c.r + 0.587 * c.g + 0.114 * c.b }
 /// amt 만큼 어둡게(양수) — hover 강조용. 밝은 버튼은 어둡게, 그게 라이트 UI 관습.
 pub fn shade(c: Color, amt: f32) -> Color {
     Color { r: (c.r - amt).max(0.0), g: (c.g - amt).max(0.0), b: (c.b - amt).max(0.0), a: c.a }
+}
+
+#[cfg(test)]
+mod launcher_tests {
+    use super::*;
+
+    #[test]
+    fn detects_fcitx5_autostart_entries() {
+        assert!(desktop_launches_fcitx5("[Desktop Entry]\nExec=fcitx5 -d --replace\n"));
+        assert!(desktop_launches_fcitx5("[Desktop Entry]\nExec=/usr/bin/fcitx5\n"));
+        assert!(!desktop_launches_fcitx5("[Desktop Entry]\nExec=fcitx5-configtool\n"));
+        assert!(!desktop_launches_fcitx5("[Desktop Entry]\nExec=kime\n"));
+    }
+
+    #[test]
+    fn detects_hidden_overrides() {
+        assert!(desktop_hidden("[Desktop Entry]\nHidden=true\n"));
+        assert!(desktop_hidden("[Desktop Entry]\nX-GNOME-Autostart-enabled=false\n"));
+        assert!(!desktop_hidden("[Desktop Entry]\nX-GNOME-Autostart-enabled=true\n"));
+    }
+
+    #[test]
+    fn fcitx5_restart_has_no_single_quote() {
+        // 절전 훅에 cmd='...' 로 들어가므로 작은따옴표가 있으면 스크립트가 깨진다
+        assert!(!FCITX5_RESTART_SH.contains('\''));
+        assert!(!FCITX5_RESTART_SH.contains("--replace"));
+    }
+
+    #[test]
+    fn resume_hook_is_valid_sh() {
+        let script = resume_hook_script();
+        assert!(script.contains("# popmgr-resume-ime-hook: v3"));
+        assert!(!script.contains("__FCITX5_RESTART__"));
+        let path = std::env::temp_dir().join(format!("popmgr-hook-test.{}.sh", std::process::id()));
+        std::fs::write(&path, &script).unwrap();
+        let out = std::process::Command::new("sh").arg("-n").arg(&path).output().unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[test]
+    fn resume_hook_ignores_pre_and_non_sleep() {
+        let path = std::env::temp_dir().join(format!("popmgr-hook-run.{}.sh", std::process::id()));
+        std::fs::write(&path, resume_hook_script()).unwrap();
+        for args in [["pre", "suspend"], ["post", "shutdown"]] {
+            let out = std::process::Command::new("sh").arg(&path).args(args).output().unwrap();
+            assert!(out.status.success());
+            assert!(out.stdout.is_empty());
+        }
+        let _ = std::fs::remove_file(&path);
+    }
 }
