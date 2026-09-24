@@ -26,9 +26,10 @@ impl ImeKind {
         match self {
             ImeKind::Ibus   => &["ibus", "ibus-hangul"],
             ImeKind::Fcitx5 => &[
+                // Qt 모듈은 Qt 앱이 있을 때만 진단 카드가 따로 설치한다 — Qt ABI 가 섞인 환경에선
+                // 여기 넣으면 apt 가 전체 설치를 거부한다.
                 "fcitx5", "fcitx5-hangul",
                 "fcitx5-frontend-gtk3", "fcitx5-frontend-gtk4",
-                "fcitx5-frontend-qt5", "fcitx5-frontend-qt6",
             ],
             ImeKind::Kime   => &[],  // GitHub Release에서 설치
         }
@@ -90,6 +91,23 @@ impl Fcitx5Behavior {
 
 /// 툴킷별 fcitx5 IM 모듈. GTK_IM_MODULE/QT_IM_MODULE=fcitx 인데 모듈 패키지가 없으면
 /// 그 툴킷 앱은 fcitx5에 붙지 못해 한글 입력이 안 되거나 불안정하다.
+/// 프론트엔드 패키지가 필요한지: 해당 툴킷 GUI 라이브러리가 하나라도 설치돼 있을 때만.
+async fn toolkit_present(frontend_pkg: &str) -> bool {
+    let libs: &[&str] = match frontend_pkg {
+        "fcitx5-frontend-gtk3" => &["libgtk-3-0t64", "libgtk-3-0"],
+        "fcitx5-frontend-gtk4" => &["libgtk-4-1"],
+        "fcitx5-frontend-qt5" => &["libqt5gui5t64", "libqt5gui5", "libqt5gui5-gles"],
+        "fcitx5-frontend-qt6" => &["libqt6gui6t64", "libqt6gui6"],
+        _ => return true,
+    };
+    for lib in libs {
+        if pkg_installed(lib).await {
+            return true;
+        }
+    }
+    false
+}
+
 const FCITX5_FRONTEND_PKGS: &[(&str, &str)] = &[
     ("fcitx5-frontend-gtk3", "GTK3 (Chrome, Firefox 등)"),
     ("fcitx5-frontend-gtk4", "GTK4"),
@@ -608,6 +626,11 @@ async fn scan_ime_status() -> ImeStatus {
         let content = tokio::fs::read_to_string(fcitx5_config_path()).await.unwrap_or_default();
         let mut missing = Vec::new();
         for (pkg, _) in FCITX5_FRONTEND_PKGS {
+            // 그 툴킷의 GUI 라이브러리가 없으면(= 그 툴킷 앱이 없음) 모듈도 필요 없다.
+            // 예전엔 무조건 요구해서, Qt 앱이 하나도 없는데 설치도 안 되는(Qt ABI 불일치) 경고가 떴다.
+            if !toolkit_present(pkg).await {
+                continue;
+            }
             if !pkg_installed(pkg).await {
                 missing.push(*pkg);
             }
