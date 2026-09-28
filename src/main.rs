@@ -510,7 +510,14 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
         );
     }
 
-    container(col)
+    // 창이 낮으면 아래 탭이 잘리므로 탭 목록만 세로 스크롤(얇은 스크롤바), 배경·테두리는 바깥 컨테이너가 전체 높이로 유지.
+    let list = scrollable(col.padding(iced::Padding { top: 0.0, right: 0.0, bottom: 16.0, left: 0.0 }))
+        .direction(scrollable::Direction::Vertical(
+            scrollable::Scrollbar::new().width(4).scroller_width(4).margin(2),
+        ))
+        .height(Length::Fill);
+
+    container(list)
         .width(190)
         .height(Length::Fill)
         .style(|_| iced::widget::container::Style {
