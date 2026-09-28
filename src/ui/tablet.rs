@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::runner::{self, CmdResult};
-use super::ime::{action_btn, card, running_bar, C_BLUE, C_BTN2, C_DIM, C_ERR, C_OK, C_TEXT, C_WARN};
+use super::ime::{action_btn, card, running_bar, C_BLUE, C_BTN2, C_DIM, C_ERR, C_OK, C_TEXT, C_TEXT2, C_WARN};
 
 /// 패치·설치 대상 flatpak 앱 ID (Weylus Community Edition).
 const APPID: &str = "io.github.electronstudio.WeylusCommunityEdition";
@@ -19,7 +19,7 @@ const APPID: &str = "io.github.electronstudio.WeylusCommunityEdition";
 pub enum Encoder { Cpu, Vaapi, Nvenc }
 
 impl Default for Encoder {
-    fn default() -> Self { Encoder::Cpu }
+    fn default() -> Self { Encoder::Vaapi }
 }
 
 impl Encoder {
@@ -52,7 +52,7 @@ pub struct TabletConfig {
 
 impl Default for TabletConfig {
     fn default() -> Self {
-        Self { port: 1701, access_code: String::new(), encoder: Encoder::Cpu, address: AddressMode::Lan }
+        Self { port: 1701, access_code: String::new(), encoder: Encoder::Vaapi, address: AddressMode::Lan }
     }
 }
 
@@ -442,7 +442,9 @@ pub enum TabletMsg {
     Started(CmdResult),
     Stop,
     Stopped(CmdResult),
-    SetEncoder(Encoder),
+    SelectEncoder(Encoder),
+    ApplyEncoder,
+    EncoderApplied(CmdResult),
     SetAddress(AddressMode),
     RegenerateCode,
     CopyUrl,
@@ -455,12 +457,15 @@ pub struct TabletState {
     status: Option<TabletStatus>,
     running: Option<String>,
     qr: Option<qr_code::Data>,
+    // 버튼으로 고른 인코더(설명 표시용). "적용" 을 눌러야 cfg.encoder 에 저장·재시작된다.
+    pending_encoder: Encoder,
 }
 
 impl TabletState {
     pub fn new() -> Self {
         let cfg = load_config();
-        let mut s = Self { cfg, status: None, running: None, qr: None };
+        let pending_encoder = cfg.encoder;
+        let mut s = Self { cfg, status: None, running: None, qr: None, pending_encoder };
         s.refresh_qr();
         s
     }
@@ -511,11 +516,23 @@ impl TabletState {
                 (Task::perform(async { do_stop().await }, TabletMsg::Stopped), None)
             }
             TabletMsg::Stopped(r) => { self.running = None; (self.trigger_refresh(), Some(r)) }
-            TabletMsg::SetEncoder(e) => {
-                self.cfg.encoder = e;
-                save_config(&self.cfg);
+            TabletMsg::SelectEncoder(e) => {
+                self.pending_encoder = e;
                 (Task::none(), None)
             }
+            TabletMsg::ApplyEncoder => {
+                self.cfg.encoder = self.pending_encoder;
+                save_config(&self.cfg);
+                let was_running = self.status.as_ref().is_some_and(|s| s.running);
+                if !was_running {
+                    let msg = format!("인코더를 {} 로 저장했습니다. 다음 시작부터 적용됩니다.", encoder_label(self.cfg.encoder));
+                    return (Task::none(), Some(CmdResult { success: true, output: msg }));
+                }
+                self.running = Some("인코더 적용 중... (Weylus 재시작)".into());
+                let cfg = self.cfg.clone();
+                (Task::perform(async move { restart_weylus(cfg).await }, TabletMsg::EncoderApplied), None)
+            }
+            TabletMsg::EncoderApplied(r) => { self.running = None; (self.trigger_refresh(), Some(r)) }
             TabletMsg::SetAddress(a) => {
                 self.cfg.address = a;
                 save_config(&self.cfg);
@@ -688,28 +705,82 @@ fn connection_card<'a>(state: &'a TabletState, st: &'a TabletStatus, busy: bool)
     card(body)
 }
 
-fn encoder_button(label: &str, target: Encoder, current: Encoder, enabled: bool) -> Element<'static, TabletMsg> {
-    let color = if target == current { C_BLUE } else { C_BTN2 };
-    action_btn(label, TabletMsg::SetEncoder(target), enabled, color)
+fn encoder_label(e: Encoder) -> &'static str {
+    match e {
+        Encoder::Cpu => "CPU",
+        Encoder::Vaapi => "Intel GPU (VAAPI)",
+        Encoder::Nvenc => "NVIDIA (NVENC)",
+    }
+}
+
+/// 인코더별 설명 줄. 이 노트북은 냉각이 약해(스로틀 잦음) 발열을 1순위 기준으로 설명한다.
+pub fn encoder_desc(e: Encoder) -> &'static [&'static str] {
+    match e {
+        Encoder::Cpu => &[
+            "메인 프로세서가 직접 압축합니다(x264). 어디서나 동작하는 대신 가장 무겁습니다.",
+            "발열: 높음 — 이 노트북 실측 CPU 123~145%. 열이 쌓이면 스로틀로 전체가 느려지고 화면도 끊깁니다.",
+            "GPU 방식이 검은 화면·오류일 때만 쓰세요.",
+        ],
+        Encoder::Vaapi => &[
+            "내장 인텔 그래픽(UHD 630)의 압축 전용 회로가 처리합니다. 화면을 그리는 칩과 같아 가장 효율적입니다.",
+            "발열: 낮음 — 이 노트북 실측 CPU 60%(CPU 방식의 절반 이하). 남은 몫은 화면 복사·색 변환입니다.",
+            "추천 — 이 노트북 기본값.",
+        ],
+        Encoder::Nvenc => &[
+            "외장 GTX 1050 Ti 의 압축 회로가 처리합니다. CPU 는 가볍지만 외장 GPU 가 깨어나 전력·발열이 늘어납니다.",
+            "화면은 인텔 쪽에 있어 두 칩 사이 복사가 더해집니다. 이 노트북에선 실기 확인 전입니다.",
+            "실패하면 Weylus 가 CPU 로 자동 전환됩니다. 특별한 이유가 없으면 VAAPI 를 쓰세요.",
+        ],
+    }
+}
+
+async fn restart_weylus(cfg: TabletConfig) -> CmdResult {
+    let stop = do_stop().await;
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let start = do_start(cfg).await;
+    let output = format!("{}\n{}\n아이패드에서 새로고침 후 공유를 다시 허용하세요.", stop.output.trim(), start.output.trim());
+    CmdResult { success: start.success, output }
+}
+
+fn encoder_button(target: Encoder, selected: Encoder, applied: Encoder, enabled: bool) -> Element<'static, TabletMsg> {
+    let color = if target == selected { C_BLUE } else { C_BTN2 };
+    let label = if target == applied { format!("{} · 사용 중", encoder_label(target)) } else { encoder_label(target).into() };
+    action_btn(&label, TabletMsg::SelectEncoder(target), enabled, color)
 }
 
 fn encoder_card<'a>(state: &'a TabletState, st: &'a TabletStatus, busy: bool) -> Element<'a, TabletMsg> {
     let gpu = st.gpu_ffmpeg_present;
+    let (sel, applied) = (state.pending_encoder, state.cfg.encoder);
     let mut body = column![
         text("인코더").size(TYPE_BODY).font(FONT_SEMIBOLD),
-        Space::with_height(8),
+        Space::with_height(4),
+        text("아이패드로 보낼 화면을 영상으로 압축하는 방식입니다. 화질은 같고, 어느 칩이 일하느냐(=발열)가 다릅니다.")
+            .size(TYPE_CAPTION).color(C_DIM),
+        Space::with_height(10),
         row![
-            encoder_button("CPU", Encoder::Cpu, state.cfg.encoder, !busy),
+            encoder_button(Encoder::Cpu, sel, applied, !busy),
             Space::with_width(8),
-            encoder_button("Intel GPU (VAAPI)", Encoder::Vaapi, state.cfg.encoder, !busy && gpu),
+            encoder_button(Encoder::Vaapi, sel, applied, !busy && gpu),
             Space::with_width(8),
-            encoder_button("NVIDIA (NVENC)", Encoder::Nvenc, state.cfg.encoder, !busy && gpu),
+            encoder_button(Encoder::Nvenc, sel, applied, !busy && gpu),
         ],
+        Space::with_height(12),
+        text(encoder_label(sel)).size(TYPE_CAPTION).font(FONT_SEMIBOLD).color(C_TEXT),
+        Space::with_height(4),
     ];
+    for line in encoder_desc(sel) {
+        body = body.push(text(*line).size(TYPE_CAPTION).color(C_TEXT2));
+    }
     if !gpu {
         body = body.push(Space::with_height(8));
-        body = body.push(text("GPU 인코딩 라이브러리 없음").size(TYPE_CAPTION).color(C_DIM));
+        body = body.push(text("GPU 인코딩 라이브러리 없음 — CPU 만 쓸 수 있습니다.").size(TYPE_CAPTION).color(C_DIM));
     }
+    let apply_label = if st.running { "적용 (Weylus 재시작)" } else { "적용" };
+    body = body.push(Space::with_height(10));
+    body = body.push(row![
+        Space::with_width(Length::Fill),
+        action_btn(apply_label, TabletMsg::ApplyEncoder, !busy && sel != applied, C_BLUE),
+    ]);
     card(body)
 }
 
@@ -820,10 +891,19 @@ mod tests {
     }
 
     #[test]
+    fn encoder_desc_mentions_heat_and_recommends_vaapi() {
+        for e in [Encoder::Cpu, Encoder::Vaapi, Encoder::Nvenc] {
+            assert!(!encoder_desc(e).is_empty());
+            assert!(encoder_desc(e).iter().any(|l| l.contains("발열")), "{e:?} 설명에 발열 기준이 없음");
+        }
+        assert!(encoder_desc(Encoder::Vaapi).iter().any(|l| l.contains("추천")));
+    }
+
+    #[test]
     fn config_missing_fields_use_defaults() {
         let cfg: TabletConfig = serde_json::from_str(r#"{"port": 1234}"#).unwrap();
         assert_eq!(cfg.port, 1234);
-        assert_eq!(cfg.encoder, Encoder::Cpu);
+        assert_eq!(cfg.encoder, Encoder::Vaapi);
         assert_eq!(cfg.address, AddressMode::Lan);
         assert_eq!(cfg.access_code, "");
     }
