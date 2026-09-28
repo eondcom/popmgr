@@ -51,6 +51,16 @@ Pop!_OS / COSMIC 데스크톱 관리 도구 — Rust + [Iced](https://github.com
 - **재인식** 버튼: 재부팅 후 `i2c-dev` 모듈 미로드 등으로 외부 모니터가 안 보일 때 모듈 재로드 + udev 재트리거
 - ddcutil 설치 시 udev 룰이 연결된 모니터 i2c 장치에 세션 사용자 ACL(uaccess)을 부여하므로 i2c 그룹 가입·재로그인 없이 동작. 미설정 시 "권한 설정" 카드 노출
 
+### 아이패드 탭 (보조화면 / 터치)
+- 아이패드를 Wi-Fi 로 **터치 되는 보조화면**으로 — Weylus CE(flatpak)의 COSMIC 패치판을 관리한다.
+  - 원본 Weylus 는 COSMIC 에서 `failed to init screen cast`: COSMIC 스크린캐스트는 RGBA/BGRA 만 주는데
+    Weylus 는 BGRx/RGBx 만 받는다. flatpak 바이너리 복사본(`~/Applications/weylus-cosmic/weylus`)의 형식 문자열 5곳을 바꾼다.
+- 설치·패치 상태(원본 sha256 비교로 flatpak 업데이트 감지) / 다시 패치(치환 수가 5가 아니면 중단).
+- 시작·중지(`--no-gui`, 접속 코드), 접속 URL + **QR 코드**(`?access_code=`), LAN/Tailscale 전환, 코드 재생성.
+- 인코더 CPU / Intel GPU(VAAPI) / NVIDIA(NVENC) — 고르면 설명(발열 기준 실측)이 보이고 '적용'으로 저장·재시작. 기본 VAAPI.
+  - GPU 인코딩은 자체 빌드 ffmpeg 8.1.1(`~/Applications/weylus-cosmic/ffmpeg`, 빌드 스크립트 `build-ffmpeg.sh`)이 있어야 한다.
+- 방화벽 허용(pkexec ufw, LAN /24), 사용 팁. CLI `popmgr --tablet-status | --tablet-start | --tablet-stop`.
+
 ### COSMIC 트윅 탭
 - **cosmic-files copy-path** — 탐색기 우클릭에 '경로 복사' 항상 표시 (패치 없이도 Shift+우클릭 / Ctrl+Shift+C 로 가능)
 - **3손가락 제스처** — 터치패드 3손가락 위 스와이프 → 워크스페이스 오버뷰 열기/닫기.
@@ -150,6 +160,19 @@ sudo apt-get install --reinstall cosmic-comp
 
 ## 변경 이력
 
+### 2026-09-28 — 아이패드 보조화면 탭 · 사이드바 스크롤
+- **아이패드 탭**(위 기능 참고). 조사 순서와 버린 대안:
+  - USB-C 직결 불가(아이패드는 영상 입력 없음, `lsusb` 에 USB 기기로만 잡힘). 사이드카·Spacedesk·Duet 은 리눅스 미지원. AirPlay 는 방향 반대.
+  - Deskreen CE(AppImage)는 동작하지만 보기 전용 → 터치가 되는 Weylus 선택.
+  - Weylus 실패 원인은 PipeWire `no more output formats`(COSMIC RGBA vs Weylus RGBx). 소스 `src/capturable/pipewire.rs:145-154`.
+    재빌드엔 gstreamer 등 -dev 패키지(sudo)가 필요해 바이너리 문자열 치환으로 해결, 실기로 영상·터치 확인.
+  - `--try-vaapi` 무효 원인 2겹: flatpak 번들 ffmpeg 가 VAAPI 없이 빌드됨(런타임 ffmpeg 는 7.x 라 교체 불가) +
+    ffmpeg 8 은 필터 그래프 parse 중 init 하는데 Weylus 는 그 뒤에 hwupload 에 장치를 붙임. ffmpeg 8.1.1 자체 빌드 +
+    `vf_hwupload.c` 지연 획득 패치 → `h264_vaapi`, Weylus CPU 123~145% → 60%.
+  - 창(window) 공유 시 터치 좌표가 어긋남(Wayland 입력은 모니터 좌표) → 팁에 "모니터 선택" 명시.
+- **사이드바 스크롤**: 탭이 11개가 되며 높이 680 창에서도 '앱 관리'가 잘렸다 → 탭 목록 `scrollable`.
+- 커뮤니티 글 https://ai.eond.com/community/493465 · 스레드 https://www.threads.com/@eondcom/post/Ddz_hc-k2qT
+
 ### 2026-09-24 — 배터리 자동 절전 · 한글 풀림 · 3손가락 · 경로 복사 · 디자인 정합
 - **전원 탭 "배터리 부족 시 자동 절전"**: 방전 중 임계값(기본 5%) 이하면 root systemd 타이머(1분)가 절전, 복귀 후 3분 유예.
   - 이유: UPower 1.90.3 은 `CriticalPowerAction=Suspend` 미지원이고 이 PC 는 디스크 스왑이 없어 HybridSleep 불가 → 2%에서 PowerOff 로 폴백해 작업이 날아갔다. Pop!_OS 저장소엔 1.90.3 뿐(Suspend 지원은 1.90.9+).
@@ -204,6 +227,16 @@ sudo apt-get install --reinstall cosmic-comp
 6. (선택) plucky 에서 들어온 고아 Qt 라이브러리 정리 — 나중에 apt 로 Qt 앱 설치 시 ABI 충돌 원인:
    `sudo apt remove libqt6core6t64 libqt6dbus6 libqt5core5t64 libqt5dbus5t64 libqt5network5t64`
 7. (선택) popmgr 입력칸 한글 입력: iced 0.13 은 IME 미지원 → iced 0.14 업그레이드 필요.
+8. **아이패드 탭 실기 확인**(2026-09-28 설치본): 아이패드로 QR 스캔 → 접속, 인코더 '적용' 버튼으로 재시작되는지.
+   ```bash
+   popmgr --tablet-status        # running·clients·current_encoder 확인
+   grep 'Video:' ~/.cache/popmgr/weylus.log | tail -1   # @h264_vaapi 여야 함
+   ```
+9. (선택) 아이패드 NVENC 실기 확인 — 자체 ffmpeg 는 nv-codec-headers 13.0(드라이버 580 호환)으로 빌드했지만 미검증.
+10. (선택) Weylus 자동 시작(탭 열 때 / 로그인 때) — 사용자에게 제안만 함, 미구현.
+11. (선택) 릴리스 빌드 단축: `lto = "thin"`, `codegen-units = 16` — 현재 fat LTO 로 최종 링크가 코어 1개로 수 분.
+12. flatpak Weylus 가 업데이트되면 탭에 "다시 패치 필요" 경고 → '다시 패치'. ffmpeg 는 `~/Applications/weylus-cosmic/build-ffmpeg.sh`
+    재실행 시 `vf_hwupload.c` 패치를 다시 넣어야 한다(소스 트리 `~/Applications/weylus-cosmic/src/ffmpeg-8.1.1` 에 적용돼 있음).
 
 ## 세션 로그
 
@@ -211,11 +244,17 @@ sudo apt-get install --reinstall cosmic-comp
   3손가락 사용자 서비스, copy-path 패치 안전화, EOND UI 디자인 토큰(Pretendard 등), Qt 툴킷 경고 수정, install.sh 정리.
   Codex 는 사용량 한도(10-18까지)로 Claude 가 직접 구현. 스레드 글 Ddq3iyWE6-c + 답글 3개(스크린샷).
 
+- **2026-09-28**: 아이패드 보조화면 — Deskreen(보기 전용) → Weylus COSMIC 형식 패치(터치) → ffmpeg 8.1.1 VAAPI 자체 빌드·
+  hwupload 패치(CPU 145→60%). popmgr '아이패드' 탭(QR·접속코드·인코더 선택→적용·재패치·방화벽) + 사이드바 스크롤.
+  Codex 한도로 Sonnet 서브에이전트 구현 → Claude 검증(테스트 109, CLI E2E, 접속코드, Xvfb 캡처). master e130aad.
+  커뮤니티 493465 + 스레드 Ddz_hc-k2qT. 산출물 `.claude/plans/2026-09-28-artifacts/`.
+
 &nbsp;
 
 관련 세션
 
-    claude --resume 75627a71-ba2d-49de-a38a-07aa8a43567d
+    claude --resume 75627a71-ba2d-49de-a38a-07aa8a43567d   # 2026-09-24
+    claude --resume cbfa4506-1789-4d69-8742-6ff640e3a46e   # 2026-09-28 아이패드
 
 ## 라이선스
 
