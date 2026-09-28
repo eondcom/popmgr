@@ -7,4 +7,5 @@ pub mod ime;
 pub mod monitor;
 pub mod power;
 pub mod printer;
+pub mod tablet;
 pub mod usb;

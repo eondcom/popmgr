@@ -17,6 +17,7 @@ use ui::{
     monitor::{self, MonitorMsg, MonitorState},
     power::{PowerMsg, PowerState},
     printer::{PrinterMsg, PrinterState},
+    tablet::{TabletMsg, TabletState},
     usb::{UsbMsg, UsbState},
 };
 use ui::ime::{C_BG, C_BLUE, C_BORDER, C_DIM, C_SURFACE, C_TEXT, C_TEXT2, C_HOVER, C_HOVER_WEAK};
@@ -32,7 +33,7 @@ fn app_theme() -> iced::Theme {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Tab { Ime, Usb, Audio, Disk, Display, Power, Monitor, Cosmic, Printer, Apps }
+enum Tab { Ime, Usb, Audio, Disk, Display, Tablet, Power, Monitor, Cosmic, Printer, Apps }
 
 #[derive(Debug, Clone)]
 enum Message {
@@ -42,6 +43,7 @@ enum Message {
     Audio(AudioMsg),
     Disk(DiskMsg),
     Display(DisplayMsg),
+    Tablet(TabletMsg),
     Power(PowerMsg),
     Monitor(MonitorMsg),
     Cosmic(CosmicMsg),
@@ -58,6 +60,7 @@ struct App {
     audio: AudioState,
     disk: DiskState,
     display: DisplayState,
+    tablet: TabletState,
     power: PowerState,
     monitor: MonitorState,
     cosmic: CosmicState,
@@ -101,6 +104,15 @@ fn main() -> iced::Result {
     }
     if args.get(1).map(|s| s.as_str()) == Some("--record-region-toggle") {
         std::process::exit(ui::apps::record_region_toggle_cli());
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--tablet-status") {
+        std::process::exit(ui::tablet::tablet_status_cli());
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--tablet-start") {
+        std::process::exit(ui::tablet::tablet_start_cli());
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--tablet-stop") {
+        std::process::exit(ui::tablet::tablet_stop_cli());
     }
 
     if let Err(msg) = acquire_single_instance_lock() {
@@ -235,6 +247,7 @@ fn init() -> (App, Task<Message>) {
         audio: AudioState::new(),
         disk: DiskState::new(),
         display: DisplayState::new(),
+        tablet: TabletState::new(),
         power: PowerState::new(),
         monitor: MonitorState::new(),
         cosmic: CosmicState::new(),
@@ -248,6 +261,7 @@ fn init() -> (App, Task<Message>) {
         Task::perform(async { () }, |_| Message::Audio(AudioMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Disk(DiskMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Display(DisplayMsg::Refresh)),
+        Task::perform(async { () }, |_| Message::Tablet(TabletMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Power(PowerMsg::GuardRefresh)),
         Task::perform(async { () }, |_| Message::Cosmic(CosmicMsg::Refresh)),
         Task::perform(async { () }, |_| Message::Printer(PrinterMsg::Refresh)),
@@ -278,23 +292,28 @@ fn subscription(app: &App) -> Subscription<Message> {
         iced::time::every(std::time::Duration::from_secs(2)).map(|_| Message::Monitor(MonitorMsg::Tick))
     } else { Subscription::none() };
 
+    // 아이패드 탭: 활성일 때만 3초 주기로 설치·패치·실행 상태를 다시 읽는다.
+    let tablet_tick = if app.tab == Tab::Tablet {
+        iced::time::every(std::time::Duration::from_secs(3)).map(|_| Message::Tablet(TabletMsg::Refresh))
+    } else { Subscription::none() };
+
     // 오디오/디스크 탭: 장치 상태 자동 새로고침 (꽂으면 바로 반영)
     match app.tab {
         Tab::Audio => {
             let audio = iced::time::every(std::time::Duration::from_secs(2))
                 .map(|_| Message::Audio(AudioMsg::Refresh));
-            Subscription::batch([drain, ime_watch, power_tick, audio, monitor_tick])
+            Subscription::batch([drain, ime_watch, power_tick, audio, monitor_tick, tablet_tick])
         }
         Tab::Disk => {
             let disk = iced::time::every(std::time::Duration::from_secs(2))
                 .map(|_| Message::Disk(DiskMsg::Refresh));
-            Subscription::batch([drain, ime_watch, power_tick, disk, monitor_tick])
+            Subscription::batch([drain, ime_watch, power_tick, disk, monitor_tick, tablet_tick])
         }
         // 다른 탭에서도 느린 주기로 오디오 감시 — 고정 설정 자동 복원이 항상 동작하도록
         _ => {
             let audio_slow = iced::time::every(std::time::Duration::from_secs(5))
                 .map(|_| Message::Audio(AudioMsg::Refresh));
-            Subscription::batch([drain, ime_watch, power_tick, audio_slow, monitor_tick])
+            Subscription::batch([drain, ime_watch, power_tick, audio_slow, monitor_tick, tablet_tick])
         }
     }
 }
@@ -304,9 +323,13 @@ fn update(app: &mut App, msg: Message) -> Task<Message> {
         Message::TabSelect(t) => {
             // 전원 탭: 배터리 잔량·가드 상태는 들어올 때마다 새로 읽는다
             let is_power = t == Tab::Power;
+            // 아이패드 탭: 3초 주기 구독이 시작되기 전에도 들어오자마자 한 번 읽는다
+            let is_tablet = t == Tab::Tablet;
             app.tab = t;
             if is_power {
                 Task::perform(async { () }, |_| Message::Power(PowerMsg::GuardRefresh))
+            } else if is_tablet {
+                Task::perform(async { () }, |_| Message::Tablet(TabletMsg::Refresh))
             } else {
                 Task::none()
             }
@@ -335,6 +358,11 @@ fn update(app: &mut App, msg: Message) -> Task<Message> {
             let (task, res) = app.display.update(m);
             if let Some(r) = res { push_log(&mut app.output, r); }
             task.map(Message::Display)
+        }
+        Message::Tablet(m) => {
+            let (task, res) = app.tablet.update(m);
+            if let Some(r) = res { push_log(&mut app.output, r); }
+            task.map(Message::Tablet)
         }
         Message::Power(m) => {
             let (task, res) = app.power.update(m);
@@ -398,6 +426,7 @@ fn view(app: &App) -> Element<'_, Message> {
         Tab::Audio  => app.audio.view().map(Message::Audio),
         Tab::Disk   => app.disk.view().map(Message::Disk),
         Tab::Display => app.display.view().map(Message::Display),
+        Tab::Tablet  => app.tablet.view().map(Message::Tablet),
         Tab::Power   => app.power.view().map(Message::Power),
         Tab::Monitor => app.monitor.view().map(Message::Monitor),
         Tab::Cosmic => app.cosmic.view().map(Message::Cosmic),
@@ -426,6 +455,7 @@ fn sidebar_view(app: &App) -> Element<'_, Message> {
         (Tab::Audio,  "오디오",     "입출력 / 마이크"),
         (Tab::Disk,   "디스크",     "외장하드 / 마운트"),
         (Tab::Display, "디스플레이", "모니터 밝기"),
+        (Tab::Tablet,  "아이패드",   "보조화면 / 터치"),
         (Tab::Power,  "전원",       "절전 / 예약"),
         (Tab::Monitor, "모니터",    "온도 / 과열 보호"),
         (Tab::Cosmic, "COSMIC",     "COSMIC 트윅"),
