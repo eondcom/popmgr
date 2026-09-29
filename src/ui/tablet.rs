@@ -219,11 +219,35 @@ fn recorded_pid_if_alive() -> Option<u32> {
     if pid_alive(pid) && comm_is_weylus(pid) { Some(pid) } else { None }
 }
 
-async fn pgrep_weylus_pid() -> Option<u32> {
+async fn pgrep_weylus_pids() -> Vec<u32> {
     // 패턴에 배포 경로를 포함시켜 이 명령을 grep 하는 자기 셸이 걸리지 않게 하고,
     // 그래도 남는 후보는 comm 이 정확히 weylus 인 것만 인정한다.
     let r = runner::run("pgrep", &["-f", "weylus-cosmic/weylus"]).await;
-    r.output.lines().filter_map(|l| l.trim().parse::<u32>().ok()).find(|pid| comm_is_weylus(*pid))
+    r.output.lines().filter_map(|l| l.trim().parse::<u32>().ok()).filter(|pid| comm_is_weylus(*pid)).collect()
+}
+
+// 기록된 PID 와 pgrep 결과를 합친다. 중복은 제거하고 순서는 유지한다.
+fn merge_pids(recorded: Option<u32>, found: &[u32]) -> Vec<u32> {
+    let mut pids: Vec<u32> = Vec::new();
+    for pid in recorded.into_iter().chain(found.iter().copied()) {
+        if !pids.contains(&pid) { pids.push(pid); }
+    }
+    pids
+}
+
+// `ss -Hltn` 출력에 공백 아닌 줄이 하나라도 있으면 포트가 점유된 것이다.
+fn port_in_use(ss_output: &str) -> bool {
+    ss_output.lines().any(|l| !l.trim().is_empty())
+}
+
+// 최대 max_ms 동안 100ms 간격으로 pid 가 죽길 기다린다.
+async fn wait_dead(pid: u32, max_ms: u64) -> bool {
+    let mut waited = 0;
+    while pid_alive(pid) && waited < max_ms {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        waited += 100;
+    }
+    !pid_alive(pid)
 }
 
 // ─── 상태 조회 ───────────────────────────────────────────────────────────
@@ -272,7 +296,7 @@ async fn scan_status(cfg: &TabletConfig) -> TabletStatus {
     st.gpu_ffmpeg_present = ffmpeg_lib_file().exists();
 
     st.running_pid = recorded_pid_if_alive();
-    if st.running_pid.is_none() { st.running_pid = pgrep_weylus_pid().await; }
+    if st.running_pid.is_none() { st.running_pid = pgrep_weylus_pids().await.first().copied(); }
     st.running = st.running_pid.is_some();
 
     if st.running {
@@ -332,6 +356,15 @@ async fn do_start(cfg: TabletConfig) -> CmdResult {
     if !weylus_bin_path().exists() {
         return CmdResult { success: false, output: "패치본이 없습니다. 먼저 패치를 실행하세요.".into() };
     }
+    let alive = merge_pids(recorded_pid_if_alive(), &pgrep_weylus_pids().await);
+    if !alive.is_empty() {
+        let list = alive.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
+        return CmdResult { success: false, output: format!("이미 실행 중입니다 (PID {list}). 먼저 중지하세요.") };
+    }
+    let ss = runner::run_sh(&format!("ss -Hltn '( sport = :{} )' 2>/dev/null", cfg.port)).await;
+    if port_in_use(&ss.output) {
+        return CmdResult { success: false, output: format!("포트 {} 을(를) 다른 프로세스가 사용 중입니다.", cfg.port) };
+    }
     let dir = weylus_dir();
     let gpu = ffmpeg_lib_file().exists();
     let args = build_args(&cfg, &dir, gpu);
@@ -354,9 +387,14 @@ async fn do_start(cfg: TabletConfig) -> CmdResult {
         .stdout(out_f).stderr(err_f)
         .spawn();
     match spawned {
-        Ok(child) => {
+        Ok(mut child) => {
             let pid = child.id();
             let _ = std::fs::write(pid_path(), pid.to_string());
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            if let Ok(Some(_)) = child.try_wait() {
+                let _ = std::fs::remove_file(pid_path());
+                return CmdResult { success: false, output: format!("Weylus 가 바로 종료됐습니다. 로그: {}", log_file.display()) };
+            }
             CmdResult { success: true, output: format!("Weylus 시작됨 (PID {pid}, 포트 {})", cfg.port) }
         }
         Err(e) => CmdResult { success: false, output: format!("실행 실패: {e}") },
@@ -364,22 +402,27 @@ async fn do_start(cfg: TabletConfig) -> CmdResult {
 }
 
 async fn do_stop() -> CmdResult {
-    let mut pids = Vec::new();
-    if let Some(pid) = recorded_pid_if_alive() { pids.push(pid); }
-    if pids.is_empty() {
-        if let Some(pid) = pgrep_weylus_pid().await { pids.push(pid); }
-    }
+    let pids = merge_pids(recorded_pid_if_alive(), &pgrep_weylus_pids().await);
     if pids.is_empty() {
         return CmdResult { success: false, output: "실행 중인 Weylus 프로세스를 찾지 못했습니다.".into() };
     }
+    for pid in &pids { let _ = runner::run("kill", &["-TERM", &pid.to_string()]).await; }
     let mut out = String::new();
     let mut ok = true;
     for pid in &pids {
-        let r = runner::run("kill", &["-TERM", &pid.to_string()]).await;
-        if !r.success { ok = false; }
-        out.push_str(&format!("PID {pid} 에 종료 신호 전송\n"));
+        if wait_dead(*pid, 3000).await {
+            out.push_str(&format!("PID {pid} 종료됨\n"));
+            continue;
+        }
+        let _ = runner::run("kill", &["-KILL", &pid.to_string()]).await;
+        if wait_dead(*pid, 1000).await {
+            out.push_str(&format!("PID {pid} 응답 없어 강제 종료(SIGKILL)\n"));
+        } else {
+            ok = false;
+            out.push_str(&format!("PID {pid} 종료 실패\n"));
+        }
     }
-    let _ = std::fs::remove_file(pid_path());
+    if ok { let _ = std::fs::remove_file(pid_path()); }
     CmdResult { success: ok, output: out }
 }
 
@@ -736,7 +779,10 @@ pub fn encoder_desc(e: Encoder) -> &'static [&'static str] {
 
 async fn restart_weylus(cfg: TabletConfig) -> CmdResult {
     let stop = do_stop().await;
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    // "찾지 못함" 은 원래 안 돌던 경우라 계속 진행하고, 그 외 실패는 start 하지 않는다.
+    if !stop.success && !stop.output.contains("찾지 못했습니다") {
+        return CmdResult { success: false, output: stop.output.trim().to_string() };
+    }
     let start = do_start(cfg).await;
     let output = format!("{}\n{}\n아이패드에서 새로고침 후 공유를 다시 허용하세요.", stop.output.trim(), start.output.trim());
     CmdResult { success: start.success, output }
@@ -823,6 +869,20 @@ fn tips_card<'a>() -> Element<'a, TabletMsg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merge_pids_dedups_and_keeps_order() {
+        assert_eq!(merge_pids(None, &[]), Vec::<u32>::new());
+        assert_eq!(merge_pids(Some(5), &[5, 7]), vec![5, 7]);
+        assert_eq!(merge_pids(Some(9), &[5]), vec![9, 5]);
+    }
+
+    #[test]
+    fn port_in_use_needs_non_blank_line() {
+        assert!(!port_in_use(""));
+        assert!(!port_in_use("\n  \n"));
+        assert!(port_in_use("LISTEN 0 128 0.0.0.0:1701 0.0.0.0:*\n"));
+    }
 
     #[test]
     fn patch_bytes_replaces_five_occurrences() {
