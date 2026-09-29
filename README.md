@@ -60,6 +60,9 @@ Pop!_OS / COSMIC 데스크톱 관리 도구 — Rust + [Iced](https://github.com
 - 인코더 CPU / Intel GPU(VAAPI) / NVIDIA(NVENC) — 고르면 설명(발열 기준 실측)이 보이고 '적용'으로 저장·재시작. 기본 VAAPI.
   - GPU 인코딩은 자체 빌드 ffmpeg 8.1.1(`~/Applications/weylus-cosmic/ffmpeg`, 빌드 스크립트 `build-ffmpeg.sh`)이 있어야 한다.
 - 방화벽 허용(pkexec ufw, LAN /24), 사용 팁. CLI `popmgr --tablet-status | --tablet-start | --tablet-stop`.
+- **안드로이드 폰도 같은 방식으로 된다**(앱 설치 없음, 폰 Chrome 으로 같은 URL/QR). USB 는 `adb reverse tcp:1701 tcp:1701` 후
+  폰에서 `localhost:1701` — 폰이 USB 에서 재인식되면 reverse 가 풀려 "null 에 접근할 수 없음"이 뜬다(다시 실행).
+- 중지는 모든 weylus PID 에 TERM → 3초 뒤 KILL 하고 PID 별 결과를 보고. 시작은 이미 실행 중·포트 점유면 거부.
 
 ### COSMIC 트윅 탭
 - **cosmic-files copy-path** — 탐색기 우클릭에 '경로 복사' 항상 표시 (패치 없이도 Shift+우클릭 / Ctrl+Shift+C 로 가능)
@@ -160,6 +163,19 @@ sudo apt-get install --reinstall cosmic-comp
 
 ## 변경 이력
 
+### 2026-09-29 — 태블릿 중지 버그 · 안드로이드 폰 · 확장 모니터 실험(popmgr 밖)
+- **태블릿 중지 버그 수정**(브랜치 `worktree-tablet-stop-fix` 59044e6, master 미병합): Weylus 가 SIGTERM 로그 뒤 멈춰
+  1701 을 쥔 채 남고, 시작은 두 번째 인스턴스를 띄워 bind 실패인데도 "시작됨" 보고 → 폰 접속 불가였다.
+  중지=전체 PID TERM→3초→KILL, 시작=실행 중/포트 점유 거부 + 1.5초 뒤 즉시 종료 감지, 인코더 재시작=고정 sleep 제거.
+  실기: SIGSTOP 으로 멈춘 인스턴스를 3.2초에 KILL·포트 해제, 중복 시작 거부, 재시작 후 curl 200. 테스트 111 통과.
+- 안드로이드 폰(갤럭시 노트10)으로 Weylus Wi-Fi·USB(adb reverse) 모두 동작 확인.
+- popmgr 밖에서 한 실험(재사용 시 참고, 코드는 `~/Applications/`):
+  - `~/Applications/evdi-vmon/` — evdi 1.15.1(GitHub, 저장소판 1.14.2 는 커널 7.1 빌드 실패) + 자작 EDID 클라이언트 `vmon [720p30|1080p60]`.
+    COSMIC 이 DVI-I-1 확장 모니터로 인식하지만 컴포지터가 dmabuf 를 못 넘겨 CPU 경로 → 키 입력 씹힘/CPU 373%. 상시 사용 불가.
+  - `~/Applications/sunshine/` — Sunshine AppImage + LD_PRELOAD 보정 `fpsfix/`(60fps 협상, 포털 Response 경쟁, evdi 용 RGBA/dmabuf/색).
+    미러링 CPU 7.2%(Weylus 약 30%). 사용자 포털 설정 `~/.config/xdg-desktop-portal/cosmic-portals.conf`(RemoteDesktop=none).
+- 커뮤니티 시리즈 4편 https://ai.eond.com/community/493510 ~ 493513 (+ Threads·LinkedIn 각 4건).
+
 ### 2026-09-28 — 아이패드 보조화면 탭 · 사이드바 스크롤
 - **아이패드 탭**(위 기능 참고). 조사 순서와 버린 대안:
   - USB-C 직결 불가(아이패드는 영상 입력 없음, `lsusb` 에 USB 기기로만 잡힘). 사이드카·Spacedesk·Duet 은 리눅스 미지원. AirPlay 는 방향 반대.
@@ -237,6 +253,14 @@ sudo apt-get install --reinstall cosmic-comp
 11. (선택) 릴리스 빌드 단축: `lto = "thin"`, `codegen-units = 16` — 현재 fat LTO 로 최종 링크가 코어 1개로 수 분.
 12. flatpak Weylus 가 업데이트되면 탭에 "다시 패치 필요" 경고 → '다시 패치'. ffmpeg 는 `~/Applications/weylus-cosmic/build-ffmpeg.sh`
     재실행 시 `vf_hwupload.c` 패치를 다시 넣어야 한다(소스 트리 `~/Applications/weylus-cosmic/src/ffmpeg-8.1.1` 에 적용돼 있음).
+13. **브랜치 병합**: `worktree-tablet-stop-fix`(59044e6, push 됨) → master. 설치본(~/.local/bin/popmgr)은 이미 이 코드.
+    ```bash
+    git checkout master && git merge --ff-only origin/worktree-tablet-stop-fix && git push
+    ```
+14. **소리 출력 정리**(미결): 기본 출력=블루투스인데 Chrome 은 내장 스피커로 복원돼 앱마다 출력이 갈림. 사용자에게 어느 쪽으로 모을지 받기.
+15. (선택) 아이패드 탭 → "태블릿/폰" 으로 이름 변경 + "안드로이드 USB 연결"(adb reverse) 버튼.
+16. (선택) 확장 모니터는 HDMI/USB-C 더미 플러그 구매 후 Sunshine(`~/Applications/sunshine/restart.sh`)으로 — 보정 그대로 재사용.
+    evdi 모듈은 재부팅하면 사라짐(`sudo ~/Applications/evdi-vmon/start.sh`). 커널 업데이트 시 evdi.ko 재빌드 필요.
 
 ## 세션 로그
 
@@ -249,12 +273,17 @@ sudo apt-get install --reinstall cosmic-comp
   Codex 한도로 Sonnet 서브에이전트 구현 → Claude 검증(테스트 109, CLI E2E, 접속코드, Xvfb 캡처). master e130aad.
   커뮤니티 493465 + 스레드 Ddz_hc-k2qT. 산출물 `.claude/plans/2026-09-28-artifacts/`.
 
+- **2026-09-29**: 안드로이드 폰 보조화면(Weylus Wi-Fi/USB), 태블릿 중지 버그 수정(59044e6, 설치 완료, master 미병합),
+  evdi 가상 확장 모니터·Sunshine+Moonlight COSMIC 보정(LD_PRELOAD) 실험 — 확장은 동작하나 컴포지터 CPU 373% 라 더미 플러그 권장.
+  Codex 한도로 Sonnet 서브에이전트 구현 → Claude 검증. 커뮤니티 시리즈 493510~493513. 산출물 `.claude/plans/2026-09-29-artifacts/`.
+
 &nbsp;
 
 관련 세션
 
     claude --resume 75627a71-ba2d-49de-a38a-07aa8a43567d   # 2026-09-24
     claude --resume cbfa4506-1789-4d69-8742-6ff640e3a46e   # 2026-09-28 아이패드
+    claude --resume c0efa940-f6e4-4ad9-9fc9-212986175675   # 2026-09-29 폰·확장 모니터·Sunshine
 
 ## 라이선스
 
